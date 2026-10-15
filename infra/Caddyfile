@@ -1,0 +1,42 @@
+# Reverse proxy for Control AI Chat. Caddy obtains and renews certificates automatically;
+# point your DNS A/AAAA record at this host and it will work on first request.
+{
+	email {$ACME_EMAIL}
+}
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# An internal tool has no business in a search index.
+		X-Robots-Tag "noindex, nofollow, noarchive"
+		-Server
+	}
+
+	# A generation can run for many minutes with no bytes in between. The default proxy read
+	# timeout cuts the stream mid-answer, which surfaces to the user as a truncated reply
+	# rather than as an error, so give the streaming route its own transport.
+	@stream path /api/v1/chat/runs*
+	handle @stream {
+		reverse_proxy app:3010 {
+			header_up X-Gateway-Proxy-Client-IP {client_ip}
+			header_up X-Gateway-Proxy-Secret {$PROXY_SHARED_SECRET}
+			flush_interval -1
+			transport http {
+				read_timeout 15m
+			}
+		}
+	}
+
+	handle {
+		reverse_proxy app:3010 {
+			header_up X-Gateway-Proxy-Client-IP {client_ip}
+			header_up X-Gateway-Proxy-Secret {$PROXY_SHARED_SECRET}
+			flush_interval -1
+		}
+	}
+}

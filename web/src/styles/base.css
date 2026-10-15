@@ -1,0 +1,172 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-family: var(--font-sans);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  text-size-adjust: 100%;
+  color-scheme: light;
+}
+
+html[data-mode='dark'] {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled,
+button[aria-disabled='true'] {
+  cursor: not-allowed;
+  opacity: .55;
+}
+
+img,
+svg {
+  display: block;
+  max-width: 100%;
+}
+
+a {
+  color: var(--primary);
+}
+
+h1,
+h2,
+h3,
+p {
+  overflow-wrap: anywhere;
+}
+
+p,
+li,
+dd,
+figcaption,
+blockquote {
+  text-wrap: pretty;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 1px;
+}
+
+.ui-sr,
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.ui-message-content,
+.ui-long-help {
+  line-break: auto;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+.ui-message-content {
+  max-width: 68ch;
+}
+
+.ui-tabular,
+time,
+.ui-metadata,
+.ui-conversation-link small,
+td[data-number],
+th[data-number] {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+:lang(zh-TW),
+:lang(ja) {
+  font-synthesis-style: none;
+  line-break: strict;
+}
+
+:lang(zh-TW) :is(.ui-message-content,.ui-long-help),
+:lang(ja) :is(.ui-message-content,.ui-long-help) {
+  line-break: strict;
+  max-width: 38em;
+}
+
+:lang(zh-TW) em,
+:lang(ja) em {
+  font-style: normal;
+  font-weight: 600;
+}
+
+:lang(zh-TW) [data-stamp],
+:lang(ja) [data-stamp] {
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+@media (prefers-reduced-motion:reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+@media print {
+  html,
+  body {
+    background: var(--panel);
+    color: var(--text);
+  }
+
+  .ui-topbar,
+  .ui-sidebar,
+  .ui-composer-dock {
+    display: none !important;
+  }
+
+  .ui-app {
+    display: block !important;
+  }
+
+  .ui-workspace {
+    height: auto !important;
+  }
+
+  .ui-timeline {
+    overflow: visible !important;
+  }
+
+  .ui-message-actions,
+  .ui-jump {
+    display: none !important;
+  }
+}

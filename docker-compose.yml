@@ -1,0 +1,62 @@
+# Single-host deployment. One application container, one reverse proxy that obtains and renews
+# TLS certificates automatically.
+#
+# HTTPS is not optional. Session cookies are issued with the Secure attribute and the __Host-
+# prefix, so a browser will discard them over plain HTTP and nobody can sign in. If you are
+# terminating TLS somewhere else, keep that in mind rather than removing the proxy.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        APP_VERSION: ${APP_VERSION:-0.1.0}
+        VCS_REF: ${VCS_REF:-v0.1.0}
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Must be the exact origin users type, scheme included. It is the CSRF Origin allowlist:
+      # if it does not match, every state-changing request returns 403 CSRF_REJECTED while
+      # reads keep working, which reads like a broken app rather than a misconfiguration.
+      APP_ORIGIN: ${APP_ORIGIN:?set APP_ORIGIN to https://your.domain}
+    volumes:
+      - data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    expose:
+      - "3010"
+    # The application must not be reachable except through the proxy. The shared secret protects
+    # Caddy's client-IP assertion, while Caddy also supplies TLS and the public security headers;
+    # a direct application port would bypass those deployment boundaries.
+    networks: [internal]
+
+  caddy:
+    image: caddy:2.11.4-alpine@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+    restart: unless-stopped
+    depends_on: [app]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?set APP_DOMAIN to your.domain}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL to the address that receives certificate notices}
+      PROXY_SHARED_SECRET: ${PROXY_SHARED_SECRET:?set PROXY_SHARED_SECRET with openssl rand -hex 32}
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks: [internal]
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  internal:

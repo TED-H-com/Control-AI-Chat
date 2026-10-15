@@ -1,0 +1,14 @@
+export type Id = string;
+export type UnixMs = number;
+export type JsonText = string;
+export type MicroUsd = number;
+export type BoolInt = 0 | 1;
+export type UserStatus = 'invited' | 'active' | 'suspended' | 'deprovisioned';
+export type AuthSource = 'password';
+export type MessageStatus = 'pending' | 'streaming' | 'complete' | 'stopped' | 'failed' | 'blocked';
+export type DecisionStatus = 'final' | 'awaiting_confirmation' | 'pending_approval' | 'approved' | 'denied';
+export type PolicyScope = 'tenant' | 'group' | 'user';
+export type LedgerKind = 'reserve' | 'settle' | 'release' | 'adjustment';
+export type PartKind = 'text' | 'file_ref' | 'image_ref' | 'redacted_text';
+export type AuditOutcome = 'success' | 'failure' | 'denied';
+export type AlertStatus = 'open' | 'acknowledged' | 'resolved';

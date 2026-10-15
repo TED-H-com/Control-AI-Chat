@@ -1,0 +1,49 @@
+.ui-markdown p {
+  margin: 0 0 var(--space-3);
+}
+
+.ui-markdown :is(ul,ol) {
+  padding-left: var(--space-6);
+}
+
+.ui-markdown blockquote {
+  margin: var(--space-3) 0;
+  padding-left: var(--space-4);
+  border-left: 1px solid var(--line);
+  color: var(--text-2);
+}
+
+.ui-markdown a {
+  color: var(--primary);
+}
+
+.ui-markdown code {
+  font-family: var(--font-mono);
+  font-size: 1em;
+}
+
+.ui-markdown pre {
+  position: relative;
+  padding: var(--space-3);
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-2);
+  background: var(--panel-2);
+}
+
+.ui-markdown-table {
+  position: relative;
+  max-width: 100%;
+  margin: var(--space-3) 0;
+  overflow-x: auto;
+}
+
+.ui-markdown table {
+  border-collapse: collapse;
+}
+
+.ui-markdown th,
+.ui-markdown td {
+  padding: var(--space-2);
+  border: 1px solid var(--line);
+}

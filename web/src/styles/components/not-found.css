@@ -1,0 +1,51 @@
+.ui-route-not-found {
+  display: grid;
+  min-height: 100vh;
+  place-items: center;
+  padding: var(--space-6);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+}
+
+.ui-route-not-found>section {
+  width: min(480px,100%);
+  padding: var(--space-6);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-3);
+  background: var(--panel);
+}
+
+.ui-route-not-found p {
+  margin: 0 0 var(--space-2);
+  color: var(--muted);
+  font-size: var(--fs-meta);
+}
+
+.ui-route-not-found h1 {
+  margin: 0;
+  font-size: var(--fs-title);
+  font-weight: 600;
+  line-height: var(--lh-title);
+}
+
+.ui-route-not-found span {
+  display: block;
+  margin: var(--space-3) 0 var(--space-6);
+  color: var(--text-2);
+  font-size: var(--fs-ui);
+  line-height: var(--lh-ui);
+}
+
+.ui-route-not-found a {
+  display: inline-flex;
+  min-height: 32px;
+  align-items: center;
+  padding: 0 var(--space-3);
+  border-radius: var(--radius-2);
+  background: var(--primary);
+  color: var(--on-primary);
+  font-size: var(--fs-ui);
+  font-weight: 500;
+  text-decoration: none;
+}

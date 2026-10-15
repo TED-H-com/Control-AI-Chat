@@ -1,0 +1,120 @@
+.ui-topbar {
+  grid-column: 1/-1;
+  display: flex;
+  min-width: 0;
+  height: var(--topbar-height);
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: 0 var(--space-3);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.ui-topbar__left,
+.ui-topbar__actions,
+.ui-topbar__brand {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ui-topbar__brand {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.ui-topbar__brand strong {
+  max-width: 20em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-ui);
+  font-weight: 600;
+}
+
+.ui-topbar__divider {
+  width: 1px;
+  height: 20px;
+  margin: 0 var(--space-2);
+  background: var(--line);
+}
+
+.ui-topbar__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-ui);
+}
+
+.ui-topbar__language label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ui-topbar__language,
+.ui-topbar__language label {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.ui-language-status {
+  max-width: 20em;
+  color: var(--muted);
+  font-size: var(--fs-meta);
+  white-space: nowrap;
+}
+
+.ui-language-status.is-error {
+  color: var(--crimson);
+}
+
+.ui-topbar__language select {
+  width: auto;
+  height: 28px;
+}
+
+.ui-mobile-menu {
+  display: none;
+}
+
+@media (max-width:1023px) {
+  .ui-topbar {
+    grid-column: 1;
+  }
+
+  .ui-mobile-menu {
+    display: inline-grid;
+    width: 32px;
+    height: 32px;
+  }
+}
+
+@media (max-width:767px) {
+  .ui-topbar {
+    padding: 0 var(--space-2);
+  }
+
+  .ui-topbar--chat .ui-topbar__brand strong,
+  .ui-topbar__divider,
+  .ui-topbar--chat .ui-topbar__actions {
+    display: none;
+  }
+
+  .ui-topbar__title {
+    font-weight: 600;
+  }
+
+  .ui-topbar--admin .ui-topbar__actions {
+    display: none;
+  }
+
+  .ui-topbar .ui-mobile-menu {
+    width: 40px;
+    height: 40px;
+  }
+}

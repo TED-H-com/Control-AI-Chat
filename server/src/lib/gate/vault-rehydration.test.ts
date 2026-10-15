@@ -1,0 +1,14 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { StatelessGateVault } from './vault.js';
+import {DefaultGateEngine} from './engine.js';
+import type { Detector,DetectorMatch,GateContext,ResolvedRule } from './types.js';
+
+const tenant=randomUUID(),owner=randomUUID();
+function context(text:string):GateContext{const now=Date.now(),subject={tenantId:tenant,userId:owner,groupIds:[],roles:['member'] as const},rule:ResolvedRule={id:randomUUID(),revision:1,name:'email redaction',detectorKind:'pii',action:'redact',passMask:'both',priority:100,scopeType:'org',scopeId:tenant,config:{},failureMode:'escalate',sourceOrder:0};return{evaluationId:randomUUID(),requestId:randomUUID(),pass:'preflight',subject,conversationId:null,messageId:null,projectId:null,providerId:'test',modelId:'test',locale:'en',nowMs:now,parts:[{id:'part',source:'user_prompt',text,mimeType:'text/plain',fileId:null,provenance:{}}],policySnapshot:{snapshotId:randomUUID(),tenantId:tenant,policyVersion:1,fingerprint:'x',rules:[rule],createdAtMs:now},abortSignal:new AbortController().signal,confirmedWarningToken:null,metadata:{}}}
+function match(ctx:GateContext,text:string):DetectorMatch{return{matchId:randomUUID(),detectorId:'test',detectorKind:'pii',ruleId:ctx.policySnapshot.rules[0]!.id,ruleRevision:1,partId:'part',category:'email',action:'redact',confidence:'high',span:{start:0,end:Array.from(text).length},normalizedFingerprint:'fingerprint',safeExcerpt:'safe',replacementLabel:'EMAIL',metadata:{}}}
+
+test('stateless redaction preserves the established token format and no original',async()=>{const original='pa$$word',ctx=context(original),vault=new StatelessGateVault(),redacted=await vault.redact(ctx,[match(ctx,original)]);assert.match(redacted.parts[0]!.text,/^⟦REDACTED:EMAIL:[0-9A-HJKMNP-TV-Z]{26}:[0-9A-HJKMNP-TV-Z]{8}⟧$/);assert.equal(JSON.stringify(redacted).includes(original),false);assert.deepEqual(Object.keys(vault),[])});
+
+test('1,000 redacted evaluations do not grow a gate or vault structure',async()=>{const vault=new StatelessGateVault(),detector:Detector={id:'test',kind:'pii',stage:0,supportedPasses:new Set(['preflight']),timeoutMs:1_000,failureMode:'closed',async detect(ctx){return{matches:[match(ctx,ctx.parts[0]!.text)],elapsedUs:1,cacheStatus:'not_applicable',degraded:false,diagnostics:[]}}},engine=new DefaultGateEngine({detectors:[detector],vault}),vaultBefore=Reflect.ownKeys(vault),engineBefore=Reflect.ownKeys(engine),detectorCount=engine.detectors.length;for(let i=0;i<1000;i++){const original=`person-${i}@example.test`,ctx=context(original),verdict=await engine.evaluate(ctx);assert.equal(verdict.action,'redact')}assert.deepEqual(Reflect.ownKeys(vault),vaultBefore);assert.deepEqual(vaultBefore,[]);assert.deepEqual(Reflect.ownKeys(engine),engineBefore);assert.equal(engine.detectors.length,detectorCount)});

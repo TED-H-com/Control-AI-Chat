@@ -1,0 +1,1 @@
+export function jpCorporateNumberValid(value:string):boolean {if(!/^\d{13}$/.test(value))return false;let sum=0;const body=value.slice(1);for(let position=1;position<=12;position++)sum+=Number(body[12-position])*(position%2===1?1:2);return Number(value[0])===9-sum%9}

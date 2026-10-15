@@ -1,0 +1,37 @@
+{
+  "name": "control-ai-chat-server",
+  "version": "0.1.0",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "migrate": "node --import tsx src/scripts/migrate.ts",
+    "rotate-provider-credentials": "node dist/scripts/rotate-provider-credentials.js",
+    "check-key-coverage": "node dist/scripts/check-key-coverage.js",
+    "bootstrap": "node dist/scripts/bootstrap.js",
+    "issue-password-link": "node dist/scripts/issue-password-link.js",
+    "test": "npm run build --silent && node --import tsx --import ./src/test-env.ts --test \"src/**/*.test.ts\""
+  },
+  "dependencies": {
+    "@hono/node-server": "^2.0.11",
+    "@types/nodemailer": "^8.0.1",
+    "bcryptjs": "^3.0.2",
+    "better-sqlite3": "^12.2.0",
+    "dotenv": "^17.2.1",
+    "hono": "^4.13.5",
+    "nodemailer": "^9.1.1",
+    "pdfjs-dist": "^6.3.289"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": "^22.18.1",
+    "tsx": "^4.20.5",
+    "typescript": "^5.9.2"
+  }
+}

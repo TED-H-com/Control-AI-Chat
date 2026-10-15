@@ -1,0 +1,37 @@
+# Origin proxy for a dedicated, locally managed Cloudflare Tunnel. Public TLS terminates at the
+# Cloudflare edge and the encrypted tunnel reaches this HTTP listener only through host loopback.
+# The Compose override never publishes this listener on a public interface.
+http://{$APP_DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		X-Robots-Tag "noindex, nofollow, noarchive"
+		-Server
+	}
+
+	# Retain the standard Caddy-to-app authenticated client-IP boundary. Without an explicitly
+	# constrained trusted-proxy configuration, {client_ip} safely remains the tunnel peer.
+	@stream path /api/v1/chat/runs*
+	handle @stream {
+		reverse_proxy app:3010 {
+			header_up X-Gateway-Proxy-Client-IP {client_ip}
+			header_up X-Gateway-Proxy-Secret {$PROXY_SHARED_SECRET}
+			flush_interval -1
+			transport http {
+				read_timeout 15m
+			}
+		}
+	}
+
+	handle {
+		reverse_proxy app:3010 {
+			header_up X-Gateway-Proxy-Client-IP {client_ip}
+			header_up X-Gateway-Proxy-Secret {$PROXY_SHARED_SECRET}
+			flush_interval -1
+		}
+	}
+}
