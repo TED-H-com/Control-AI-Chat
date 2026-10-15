@@ -5,7 +5,8 @@ import { sanitizeExtractedText } from './security.js';
 import { MIME, type ExtractionLimits, type ExtractionOutcome, type ExtractionWarning } from './types.js';
 
 interface Job { bytes: Uint8Array; mimeType: string; limits: ExtractionLimits }
-const xmlText=(xml:string) => xml.replace(/<f\b[^>]*>[\s\S]*?<\/f>/gi,'').replace(/<w:instrText\b[^>]*>[\s\S]*?<\/w:instrText>/gi,'').replace(/<w:tab\b[^>]*\/?\s*>/gi,'\t').replace(/<w:br\b[^>]*\/?\s*>/gi,'\n').replace(/<\/w:p>|<\/a:p>|<\/row>/gi,'\n').replace(/<[^>]+>/g,'').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&amp;/g,'&').replace(/&quot;/g,'"').replace(/&apos;/g,"'");
+const XML_ENTITIES:Record<string,string>={'&lt;':'<','&gt;':'>','&amp;':'&','&quot;':'"','&apos;':"'"};
+const xmlText=(xml:string) => xml.replace(/<f\b[^>]*>[\s\S]*?<\/f>/gi,'').replace(/<w:instrText\b[^>]*>[\s\S]*?<\/w:instrText>/gi,'').replace(/<w:tab\b[^>]*\/?\s*>/gi,'\t').replace(/<w:br\b[^>]*\/?\s*>/gi,'\n').replace(/<\/w:p>|<\/a:p>|<\/row>/gi,'\n').replace(/<[^>]+>/g,'').replace(/&(?:lt|gt|amp|quot|apos);/g,entity=>XML_ENTITIES[entity]!);
 function finish(mimeType:string, raw:string, unitCount:number, unitKind:'document'|'page'|'sheet'|'slide', limits:ExtractionLimits, warnings:ExtractionWarning[]=[]):ExtractionOutcome {
   const safe=sanitizeExtractedText(raw,limits.maxExtractedCharacters);
   if(safe.removedControls) warnings.push('CONTROL_CHARACTERS_REMOVED');
@@ -30,7 +31,7 @@ async function office(job:Job):Promise<ExtractionOutcome> {
   const files=safeZipFiles(job.bytes,job.limits,wanted);
   const required=isDoc?'word/document.xml':null;
   if(required&&!files.has(required)) return {status:'error',code:'CORRUPT_FILE',mimeType:job.mimeType,warnings:[],gateRequired:true};
-  if(isSheet){const shared=[...(files.get('xl/sharedStrings.xml')??'').matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/gi)].map(match=>xmlText(match[1]??''));for(const [name,xml] of files){if(!/^xl\/worksheets\//.test(name))continue;files.set(name,xml.replace(/<c\b([^>]*)\bt=["']s["']([^>]*)>([\s\S]*?)<\/c>/gi,(_all:string,a:string,b:string,body:string)=>{const index=Number(/<v\b[^>]*>(\d+)<\/v>/i.exec(body)?.[1]);return `<c${a}${b}><v>${shared[index]??''}</v></c>`;}));}}
+  if(isSheet){const shared=[...(files.get('xl/sharedStrings.xml')??'').matchAll(/<si\b[^>]*>([\s\S]*?)<\/si>/gi)].map(match=>match[1]??'');for(const [name,xml] of files){if(!/^xl\/worksheets\//.test(name))continue;files.set(name,xml.replace(/<c\b([^>]*)\bt=["']s["']([^>]*)>([\s\S]*?)<\/c>/gi,(_all:string,a:string,b:string,body:string)=>{const index=Number(/<v\b[^>]*>(\d+)<\/v>/i.exec(body)?.[1]);return `<c${a}${b}><v>${shared[index]??''}</v></c>`;}));}}
   const ordered=[...files.entries()].sort(([a],[b])=>a.localeCompare(b,undefined,{numeric:true}));
   const content=ordered.filter(([name])=>!name.endsWith('sharedStrings.xml'));
   const raw=content.map(([,xml])=>xmlText(xml)).join('\n\n');
