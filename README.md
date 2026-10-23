@@ -1,5 +1,7 @@
 # Control AI Chat
 
+[Project website](https://ted-h-com.github.io/Control-AI-Chat/?lang=en) · [繁體中文介紹](https://ted-h-com.github.io/Control-AI-Chat/?lang=zh-TW)
+
 [English](README.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md)
 
 Governed AI chat that runs on your own infrastructure, using your own model credentials.

@@ -1,0 +1,332 @@
+{
+  "repo": "TED-H-com/Control-AI-Chat",
+  "slug": "Control-AI-Chat",
+  "name": "Control AI Chat",
+  "mark": "CA",
+  "palette": "blue",
+  "default_branch": "main",
+  "verified": "2026-10-23",
+  "license": {
+    "label": "MIT",
+    "href": "LICENSE"
+  },
+  "title": {
+    "en": "AI chat, under your own controls",
+    "zh": "AI 聊天，由你掌握權限"
+  },
+  "description": {
+    "en": "Self-hosted AI chat with group permissions, content checks, budgets, audit records and retention. Use your own provider credentials.",
+    "zh": "自架 AI 聊天系統，整合群組權限、內容檢查、預算、稽核與資料保留。使用自己的模型供應商憑證。"
+  },
+  "hero": {
+    "eyebrow": {
+      "en": "For teams running their own AI workspace",
+      "zh": "給自己管理 AI 工作空間的團隊"
+    },
+    "headline": {
+      "en": "One place to chat. Clear controls around it.",
+      "zh": "一起使用 AI，權限與紀錄都清楚。"
+    },
+    "lede": {
+      "en": "Give employees access to the models their group can use. Inspect requests and responses, reserve budgets before calls, and keep a record of what happened on infrastructure you operate.",
+      "zh": "讓員工使用群組獲准的模型。在呼叫前後檢查內容、事先保留預算，並在自己管理的基礎架構上留下操作紀錄。"
+    },
+    "primary": {
+      "href": {
+        "en": "https://github.com/TED-H-com/Control-AI-Chat/blob/main/README.md",
+        "zh": "https://github.com/TED-H-com/Control-AI-Chat/blob/main/README.zh-TW.md"
+      },
+      "label": {
+        "en": "Read the installation guide",
+        "zh": "閱讀安裝指南"
+      }
+    },
+    "secondary": {
+      "href": "#features",
+      "label": {
+        "en": "Explore the controls",
+        "zh": "看看有哪些控制"
+      }
+    },
+    "notes": [
+      {
+        "en": "Self-hosted",
+        "zh": "自行架設"
+      },
+      {
+        "en": "Your provider credentials",
+        "zh": "使用自己的供應商憑證"
+      },
+      {
+        "en": "Public source v0.1.0",
+        "zh": "公開原始碼 v0.1.0"
+      }
+    ],
+    "visual": {
+      "type": "receipt",
+      "top": {
+        "en": "A request through the workspace",
+        "zh": "一個請求經過工作空間"
+      },
+      "meta": {
+        "en": "Illustrated request flow",
+        "zh": "請求流程示意"
+      },
+      "rows": [
+        {
+          "label": {
+            "en": "Check group access",
+            "zh": "檢查群組權限"
+          },
+          "state": "ok"
+        },
+        {
+          "label": {
+            "en": "Inspect content and reserve budget",
+            "zh": "檢查內容並保留預算"
+          },
+          "state": "ok"
+        },
+        {
+          "label": {
+            "en": "Call the selected provider",
+            "zh": "呼叫選定的供應商"
+          },
+          "state": "ok"
+        },
+        {
+          "label": {
+            "en": "Inspect the reply and record usage",
+            "zh": "檢查回覆並記錄用量"
+          },
+          "state": "ok"
+        }
+      ]
+    }
+  },
+  "capabilities": {
+    "kicker": {
+      "en": "What it does",
+      "zh": "能做什麼"
+    },
+    "title": {
+      "en": "A workspace with rules you can inspect.",
+      "zh": "規則看得見的工作空間。"
+    },
+    "items": [
+      {
+        "title": {
+          "en": "Group permissions",
+          "zh": "群組權限"
+        },
+        "body": {
+          "en": "Assign providers and models by group. Owners, administrators, compliance reviewers and members have different capabilities.",
+          "zh": "依群組分配供應商與模型。擁有者、管理員、法遵審核者與成員各有不同權限。"
+        }
+      },
+      {
+        "title": {
+          "en": "Content checks",
+          "zh": "內容檢查"
+        },
+        "body": {
+          "en": "Inspect prompts, extracted uploads and responses for sensitive content. Apply configured actions from flagging and redaction to blocking or approval.",
+          "zh": "檢查提示詞、上傳檔案擷取文字與回覆中的敏感內容，依設定標記、遮蔽、阻擋或要求核准。"
+        }
+      },
+      {
+        "title": {
+          "en": "Budget control",
+          "zh": "預算控制"
+        },
+        "body": {
+          "en": "Reserve spend before a provider request and settle actual usage afterward, including when the browser closes.",
+          "zh": "在請求供應商之前保留費用，之後依實際用量結算，瀏覽器中途關閉也會處理。"
+        }
+      },
+      {
+        "title": {
+          "en": "Audit exports",
+          "zh": "稽核匯出"
+        },
+        "body": {
+          "en": "Keep append-only, hash-chained audit records and export CSV, JSON or NDJSON for review.",
+          "zh": "保留只能附加、以雜湊鏈串接的稽核紀錄，並匯出 CSV、JSON 或 NDJSON 供檢視。"
+        }
+      },
+      {
+        "title": {
+          "en": "Retention and holds",
+          "zh": "資料保留與保存"
+        },
+        "body": {
+          "en": "Apply workspace retention windows and scoped legal holds. Overdue content is removed in bounded batches.",
+          "zh": "套用工作空間的保留期限與指定範圍的法律保存，過期內容以有上限的批次清除。"
+        }
+      },
+      {
+        "title": {
+          "en": "Files and models",
+          "zh": "檔案與模型"
+        },
+        "body": {
+          "en": "Extract text from common office files and PDFs. Connect configured APIs from seven built-in providers or a validated HTTPS endpoint.",
+          "zh": "從常見 Office 檔案與 PDF 擷取文字，連接七家內建供應商的已設定 API，或通過驗證的 HTTPS 端點。"
+        }
+      }
+    ]
+  },
+  "quickstart": {
+    "kicker": {
+      "en": "Start here",
+      "zh": "從這裡開始"
+    },
+    "title": {
+      "en": "Prepare your server and provider access.",
+      "zh": "準備自己的主機與模型連線。"
+    },
+    "intro": {
+      "en": "Use a Linux amd64 or arm64 server with Docker, a domain and model-provider credentials. The README covers normal HTTPS and Cloudflare Tunnel deployment, storage, first login and recovery.",
+      "zh": "準備 Linux amd64 或 arm64 主機、Docker、網域與模型供應商憑證。README 說明一般 HTTPS 與 Cloudflare Tunnel 部署、儲存、首次登入和復原。"
+    },
+    "primary": {
+      "href": {
+        "en": "https://github.com/TED-H-com/Control-AI-Chat/blob/main/README.md",
+        "zh": "https://github.com/TED-H-com/Control-AI-Chat/blob/main/README.zh-TW.md"
+      },
+      "label": {
+        "en": "Open the setup guide",
+        "zh": "開啟設定指南"
+      }
+    },
+    "steps": [
+      {
+        "title": {
+          "en": "Deploy",
+          "zh": "部署"
+        },
+        "body": {
+          "en": "Follow the repository installation guide for your chosen access mode.",
+          "zh": "依儲存庫的安裝指南選擇連線模式。"
+        }
+      },
+      {
+        "title": {
+          "en": "Configure",
+          "zh": "設定"
+        },
+        "body": {
+          "en": "Create the owner account, configure provider credentials and assign model access.",
+          "zh": "建立擁有者帳號、設定供應商憑證並分配模型權限。"
+        }
+      },
+      {
+        "title": {
+          "en": "Verify",
+          "zh": "確認"
+        },
+        "body": {
+          "en": "Try a bounded workflow and review its budget, content checks and audit records.",
+          "zh": "先試一段有限範圍的工作流程，檢查預算、內容處置與稽核紀錄。"
+        }
+      }
+    ]
+  },
+  "status": {
+    "kicker": {
+      "en": "Current scope",
+      "zh": "目前範圍"
+    },
+    "title": {
+      "en": "Public source, for your own deployment.",
+      "zh": "公開原始碼，自行部署使用。"
+    },
+    "intro": {
+      "en": "Version 0.1.0 is available as source. There is no tagged product release or hosted service supplied by this repository.",
+      "zh": "目前以原始碼提供 0.1.0，尚無加上 tag 的產品發行版，也不由這個儲存庫提供託管服務。"
+    },
+    "works": [
+      {
+        "en": "Local accounts, optional TOTP, group model access and account recovery.",
+        "zh": "本機帳號、選用 TOTP、群組模型權限與帳號復原。"
+      },
+      {
+        "en": "Content checks, budget settlement, audit exports and retention controls are described in the public source and README.",
+        "zh": "公開原始碼與 README 記錄內容檢查、預算結算、稽核匯出與保留控制。"
+      }
+    ],
+    "limits": [
+      {
+        "en": "Selected features send data to configured providers and other documented external services; self-hosting does not make those calls local.",
+        "zh": "選用功能會把資料送到已設定的供應商及文件列出的外部服務；自行架設不會讓這些呼叫變成本機處理。"
+      },
+      {
+        "en": "The audit chain has no external anchor and cannot prove integrity against an attacker who rewrites the entire database.",
+        "zh": "稽核鏈沒有外部錨點，不能對抗改寫整份資料庫並重算鏈結的攻擊者。"
+      },
+      {
+        "en": "Deployments need their own capacity, backup and operational acceptance. Review the project privacy and security documents before enabling external features.",
+        "zh": "部署環境需要自己的容量、備份與維運驗收。開啟對外功能前，先閱讀專案的隱私與安全文件。"
+      }
+    ]
+  },
+  "facts": [
+    {
+      "label": {
+        "en": "Version",
+        "zh": "版本"
+      },
+      "value": "0.1.0 (source)"
+    },
+    {
+      "label": {
+        "en": "License",
+        "zh": "授權"
+      },
+      "value": "MIT"
+    },
+    {
+      "label": {
+        "en": "Stack",
+        "zh": "技術"
+      },
+      "value": "TypeScript · React · SQLite · Docker"
+    },
+    {
+      "label": {
+        "en": "Host",
+        "zh": "主機"
+      },
+      "value": "Linux amd64 / arm64"
+    },
+    {
+      "label": {
+        "en": "Reviewed",
+        "zh": "查核日期"
+      },
+      "value": "2026-10-23"
+    }
+  ],
+  "links": [
+    {
+      "href": {
+        "en": "https://github.com/TED-H-com/Control-AI-Chat/blob/main/PRIVACY.md",
+        "zh": "https://github.com/TED-H-com/Control-AI-Chat/blob/main/PRIVACY.md"
+      },
+      "label": {
+        "en": "Privacy",
+        "zh": "隱私"
+      }
+    },
+    {
+      "href": {
+        "en": "https://github.com/TED-H-com/Control-AI-Chat/blob/main/SECURITY.md",
+        "zh": "https://github.com/TED-H-com/Control-AI-Chat/blob/main/SECURITY.md"
+      },
+      "label": {
+        "en": "Security",
+        "zh": "安全"
+      }
+    }
+  ]
+}
