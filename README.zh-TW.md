@@ -1,5 +1,7 @@
 # Control AI Chat
 
+[專案介紹與開始使用](https://ted-h-com.github.io/Control-AI-Chat/?lang=zh-TW)
+
 [English](README.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md)
 
 在自己的基礎架構上，使用自己的模型憑證執行的受治理 AI 聊天系統。
