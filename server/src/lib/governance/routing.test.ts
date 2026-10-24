@@ -196,3 +196,12 @@ test('tenant catalogue remains routable after an obsolete platform price expires
   assert.equal(selectSingleRoute({mode:'auto',effort:'standard'},load(expiry)).selected.tenantModelId,modelId);
   database.close();
 });
+
+
+test('message routing rejects invalid constraints', () => {
+  const unconstrained = selectSingleRoute({ mode: 'auto', effort: 'fast' }, routeCandidates);
+  assert.ok(unconstrained.selected);
+
+  assert.throws(() => selectSingleRoute({ mode: 'auto', effort: 'fast', processingRegion: 'us' }, routeCandidates),
+    (error) => error instanceof GovernanceError && error.code === 'no_models_available');
+});
