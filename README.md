@@ -95,6 +95,7 @@ repeated failures.
 - At least one API-provider credential of your own.
 - [Supported Deployment Standard](docs/SUPPORTED-DEPLOYMENT.md), the normative v0.1.x baseline and
   customer/implementation-partner acceptance checklist.
+- [Message Dispatch and Routing Architecture](docs/DISPATCH.md) for developers.
 - [Deployment guide](docs/DEPLOY.md) for installation, upgrades, backup, and operations.
 - Cloud recipes for [Azure](docs/cloud/azure.md), [AWS](docs/cloud/aws.md),
   [Google Cloud](docs/cloud/gcp.md), [Oracle Cloud](docs/cloud/oracle.md), and
