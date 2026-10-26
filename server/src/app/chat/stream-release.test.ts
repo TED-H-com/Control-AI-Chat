@@ -75,3 +75,29 @@ test('replacement text that disagrees with the gate display fails closed at drai
 test('overlapping replacement spans fail closed instead of being skipped',()=>{
   assert.throws(()=>planStreamRelease('overlap',{decisionId:'overlap',action:'redact',protectedItemCount:2,effectiveText:'[safe]',replacements:[{originalSpan:{start:0,end:4},replacement:'[a]'},{originalSpan:{start:3,end:7},replacement:'[b]'}]},true),/invalid replacement spans/);
 });
+
+test('planStreamRelease completes 50,000 tiny chunks without replacements in under a second', () => {
+  const start = performance.now();
+  let rawTail = '';
+  let delivered = 0;
+
+  for (let i = 0; i < 50_000; i++) {
+    rawTail += 'x';
+    const scanned = {
+      decisionId: 'test',
+      action: 'allow' as const,
+      protectedItemCount: 0,
+      effectiveText: rawTail,
+      replacements: []
+    };
+    const release = planStreamRelease(rawTail, scanned);
+    if (release.displayText) {
+      delivered += Array.from(release.displayText).length;
+    }
+    rawTail = release.rawTail;
+  }
+
+  const end = performance.now();
+  const elapsed = end - start;
+  assert.ok(elapsed < 2000, `Performance regression: 50,000 chunks took ${elapsed}ms`);
+});

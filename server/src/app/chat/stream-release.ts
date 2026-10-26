@@ -42,6 +42,16 @@ export class StreamProtectionAccumulator<T extends StreamGateResult> {
 
 /** Plans one release from a verdict whose spans are expressed in raw-input code points. */
 export function planStreamRelease(rawText:string,verdict:StreamGateResult,drain=false):StreamReleasePlan {
+  if (!verdict.replacements?.length) {
+    if (rawText !== verdict.effectiveText) throw new Error('Inbound gate display does not match replacement spans');
+    let len=0;for(let i=0;i<rawText.length;i++){if(rawText.charCodeAt(i)>=0xD800&&rawText.charCodeAt(i)<=0xDBFF)i++;len++;}
+    const cut=drain?len:Math.max(0,len-POSTFLIGHT_STREAM_HOLDBACK_CODE_POINTS);
+    if(!drain&&len-cut>POSTFLIGHT_STREAM_MAX_RETAINED_CODE_POINTS)throw new Error('Inbound gate retained tail exceeds safe limit');
+    if (cut===0) return {displayText:'',rawTail:rawText,protectedItemCount:0};
+    let current=0,cutIndex=rawText.length;for(let i=0;i<rawText.length;i++){if(current===cut){cutIndex=i;break;}if(rawText.charCodeAt(i)>=0xD800&&rawText.charCodeAt(i)<=0xDBFF)i++;current++;}
+    return{displayText:rawText.slice(0,cutIndex),rawTail:rawText.slice(cutIndex),protectedItemCount:0};
+  }
+
   const raw=Array.from(rawText),replacements=[...(verdict.replacements??[])].sort((left,right)=>left.originalSpan.start-right.originalSpan.start||left.originalSpan.end-right.originalSpan.end);
   const wholeDisplay:string[]=[];let previousEnd=0;
   for(const item of replacements){
