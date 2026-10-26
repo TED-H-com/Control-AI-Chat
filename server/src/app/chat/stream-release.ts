@@ -44,11 +44,20 @@ export class StreamProtectionAccumulator<T extends StreamGateResult> {
 export function planStreamRelease(rawText:string,verdict:StreamGateResult,drain=false):StreamReleasePlan {
   if (!verdict.replacements?.length) {
     if (rawText !== verdict.effectiveText) throw new Error('Inbound gate display does not match replacement spans');
-    let len=0;for(let i=0;i<rawText.length;i++){if(rawText.charCodeAt(i)>=0xD800&&rawText.charCodeAt(i)<=0xDBFF)i++;len++;}
+
+    const hasSurrogates = /[\uD800-\uDFFF]/.test(rawText);
+    if (!hasSurrogates) {
+      const cut = drain ? rawText.length : Math.max(0, rawText.length - POSTFLIGHT_STREAM_HOLDBACK_CODE_POINTS);
+      if (!drain && rawText.length - cut > POSTFLIGHT_STREAM_MAX_RETAINED_CODE_POINTS) throw new Error('Inbound gate retained tail exceeds safe limit');
+      if (cut === 0) return { displayText: '', rawTail: rawText, protectedItemCount: 0 };
+      return { displayText: rawText.slice(0, cut), rawTail: rawText.slice(cut), protectedItemCount: 0 };
+    }
+
+    let len=0;for(let i=0;i<rawText.length;i++){if(rawText.charCodeAt(i)>=0xD800&&rawText.charCodeAt(i)<=0xDBFF&&i+1<rawText.length&&rawText.charCodeAt(i+1)>=0xDC00&&rawText.charCodeAt(i+1)<=0xDFFF)i++;len++;}
     const cut=drain?len:Math.max(0,len-POSTFLIGHT_STREAM_HOLDBACK_CODE_POINTS);
     if(!drain&&len-cut>POSTFLIGHT_STREAM_MAX_RETAINED_CODE_POINTS)throw new Error('Inbound gate retained tail exceeds safe limit');
     if (cut===0) return {displayText:'',rawTail:rawText,protectedItemCount:0};
-    let current=0,cutIndex=rawText.length;for(let i=0;i<rawText.length;i++){if(current===cut){cutIndex=i;break;}if(rawText.charCodeAt(i)>=0xD800&&rawText.charCodeAt(i)<=0xDBFF)i++;current++;}
+    let current=0,cutIndex=rawText.length;for(let i=0;i<rawText.length;i++){if(current===cut){cutIndex=i;break;}if(rawText.charCodeAt(i)>=0xD800&&rawText.charCodeAt(i)<=0xDBFF&&i+1<rawText.length&&rawText.charCodeAt(i+1)>=0xDC00&&rawText.charCodeAt(i+1)<=0xDFFF)i++;current++;}
     return{displayText:rawText.slice(0,cutIndex),rawTail:rawText.slice(cutIndex),protectedItemCount:0};
   }
 
