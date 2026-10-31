@@ -4,6 +4,7 @@ import test from 'node:test';
 import { defaultPolicy } from '../../lib/gate/default-policy.js';
 import { DefaultGateEngine, deterministicDetectors, resolvePolicy } from '../../lib/gate/index.js';
 import type { GateContext, GateVerdict, GateVault, ResolvedRule } from '../../lib/gate/types.js';
+import { POSTFLIGHT_STREAM_HOLDBACK_CODE_POINTS } from '../../lib/gate/engine.js';
 import { planStreamRelease, POSTFLIGHT_STREAM_MAX_RETAINED_CODE_POINTS, StreamProtectionAccumulator } from './stream-release.js';
 
 const tenant=randomUUID(),user=randomUUID(),now=Date.now();
@@ -74,4 +75,100 @@ test('replacement text that disagrees with the gate display fails closed at drai
 
 test('overlapping replacement spans fail closed instead of being skipped',()=>{
   assert.throws(()=>planStreamRelease('overlap',{decisionId:'overlap',action:'redact',protectedItemCount:2,effectiveText:'[safe]',replacements:[{originalSpan:{start:0,end:4},replacement:'[a]'},{originalSpan:{start:3,end:7},replacement:'[b]'}]},true),/invalid replacement spans/);
+});
+
+function planStreamReleaseSlow(rawText:string,verdict:import('./stream-release.js').StreamGateResult,drain=false):import('./stream-release.js').StreamReleasePlan {
+  if (!verdict.replacements?.length) {
+    if (rawText !== verdict.effectiveText) throw new Error('Inbound gate display does not match replacement spans');
+    const raw=Array.from(rawText);
+    const cut=drain?raw.length:Math.max(0,raw.length-POSTFLIGHT_STREAM_HOLDBACK_CODE_POINTS);
+    if(!drain&&raw.length-cut>POSTFLIGHT_STREAM_MAX_RETAINED_CODE_POINTS)throw new Error('Inbound gate retained tail exceeds safe limit');
+    if(cut===0)return{displayText:'',rawTail:rawText,protectedItemCount:0};
+    return{displayText:raw.slice(0,cut).join(''),rawTail:raw.slice(cut).join(''),protectedItemCount:0};
+  }
+  const raw=Array.from(rawText),replacements=[...(verdict.replacements??[])].sort((left,right)=>left.originalSpan.start-right.originalSpan.start||left.originalSpan.end-right.originalSpan.end);
+  const wholeDisplay:string[]=[];let previousEnd=0;
+  for(const item of replacements){
+    const {start,end}=item.originalSpan;
+    if(!Number.isInteger(start)||!Number.isInteger(end)||start<previousEnd||start<0||end<=start||end>raw.length)throw new Error('Inbound gate returned invalid replacement spans');
+    wholeDisplay.push(raw.slice(previousEnd,start).join(''),item.replacement);
+    previousEnd=end;
+  }
+  wholeDisplay.push(raw.slice(previousEnd).join(''));
+  if(wholeDisplay.join('')!==verdict.effectiveText)throw new Error('Inbound gate display does not match replacement spans');
+  let cut=drain?raw.length:Math.max(0,raw.length-POSTFLIGHT_STREAM_HOLDBACK_CODE_POINTS);
+  for(const item of replacements){const {start,end}=item.originalSpan;if(start<cut&&cut<end){cut=start;break;}if(start>=cut)break;}
+  if(!drain&&raw.length-cut>POSTFLIGHT_STREAM_MAX_RETAINED_CODE_POINTS)throw new Error('Inbound gate retained tail exceeds safe limit');
+  const display:string[]=[];let cursor=0,protectedItemCount=0;
+  for(const item of replacements){const {start,end}=item.originalSpan;if(end>cut)break;display.push(raw.slice(cursor,start).join(''),item.replacement);cursor=end;protectedItemCount++;}
+  display.push(raw.slice(cursor,cut).join(''));
+  const displayText=display.join('');
+  return{displayText,rawTail:raw.slice(cut).join(''),protectedItemCount};
+}
+
+test('fast path behavior matches the slow path exactly for boundary edge cases', () => {
+  const texts = [
+    "abc",
+    "a\uD83D\uDE00b",
+    "a\uD83Db",
+    "a\uDE00b",
+    "\uD83D\uD83D",
+    "a".repeat(POSTFLIGHT_STREAM_HOLDBACK_CODE_POINTS - 1),
+    "a".repeat(POSTFLIGHT_STREAM_HOLDBACK_CODE_POINTS),
+    "a".repeat(POSTFLIGHT_STREAM_HOLDBACK_CODE_POINTS + 1),
+    "a".repeat(POSTFLIGHT_STREAM_HOLDBACK_CODE_POINTS * 2),
+    "a".repeat(POSTFLIGHT_STREAM_HOLDBACK_CODE_POINTS + POSTFLIGHT_STREAM_MAX_RETAINED_CODE_POINTS + 1),
+    "😀".repeat(POSTFLIGHT_STREAM_HOLDBACK_CODE_POINTS + 1)
+  ];
+  for (const drain of [true, false]) {
+    for (const text of texts) {
+      const verdict = {
+        decisionId: 'test',
+        action: 'allow' as const,
+        protectedItemCount: 0,
+        effectiveText: text,
+        replacements: []
+      };
+
+      let slowPlan = null, slowErr = null;
+      try { slowPlan = planStreamReleaseSlow(text, verdict, drain); } catch (err: any) { slowErr = err; }
+
+      let fastPlan = null, fastErr = null;
+      try { fastPlan = planStreamRelease(text, verdict, drain); } catch (err: any) { fastErr = err; }
+
+      if (slowErr) {
+        assert.ok(fastErr, `Slow path threw ${slowErr.message} but fast path did not`);
+        assert.equal(fastErr.message, slowErr.message);
+      } else {
+        assert.ok(!fastErr, `Fast path threw ${fastErr?.message} but slow path did not`);
+        assert.deepEqual(fastPlan, slowPlan);
+      }
+    }
+  }
+});
+
+test('planStreamRelease completes 50,000 tiny chunks without replacements in under two seconds', () => {
+  const start = performance.now();
+  let rawTail = '';
+  let delivered = 0;
+
+  for (let i = 0; i < 50_000; i++) {
+    rawTail += 'x';
+    const scanned = {
+      decisionId: 'test',
+      action: 'allow' as const,
+      protectedItemCount: 0,
+      effectiveText: rawTail,
+      replacements: []
+    };
+    const release = planStreamRelease(rawTail, scanned);
+    if (release.displayText) {
+      delivered += Array.from(release.displayText).length;
+    }
+    rawTail = release.rawTail;
+  }
+
+  const end = performance.now();
+  const elapsed = end - start;
+  assert.ok(elapsed < 2000, `Performance regression: 50,000 chunks took ${elapsed}ms`);
 });
