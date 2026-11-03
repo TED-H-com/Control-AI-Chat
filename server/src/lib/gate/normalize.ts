@@ -8,6 +8,34 @@ export function codePointIndex(text:string):CodePointIndex {const cached=indexCa
 export function clearCodePointIndexCache():void {indexCache.clear()}
 export function getCodePointIndexCacheSize():number{return indexCache.size}
 export function getCodePointIndexBuildCount():number{return indexBuildCount}
-export function normalizeText(original:string):NormalizedText { const source=Array.from(original);const chars:string[]=[];const map:number[]=[];source.forEach((cp,index)=>{for(const normalized of Array.from(cp.normalize('NFKC'))){chars.push(normalized);map.push(index)}});const nfkc=chars.join('');const folded=nfkc.toLocaleLowerCase('und');const compact=Array.from(folded).filter(cp=>!/[\p{Z}\p{P}\p{Cf}]/u.test(cp)).join('');return {original,codePoints:source,nfkc,folded,compact,nfkcToOriginal:map,toOriginalSpan(span){if(span.start<0||span.end<=span.start||span.end>map.length)throw new RangeError('gate_invalid_normalized_span');return {start:map[span.start]??0,end:(map[span.end-1]??source.length-1)+1}}} }
+
+const PUNCT_REGEX = /[\p{Z}\p{P}\p{Cf}]/u;
+
+export function normalizeText(original:string):NormalizedText {
+  const source = Array.from(original);
+  const chars: string[] = [];
+  const map: number[] = [];
+
+  for (let index = 0; index < source.length; index++) {
+    const cp = source[index];
+    if (cp === undefined) continue;
+    for (const normalized of cp.normalize('NFKC')) {
+      chars.push(normalized);
+      map.push(index);
+    }
+  }
+
+  const nfkc = chars.join('');
+  const folded = nfkc.toLocaleLowerCase('und');
+  let compact = '';
+
+  const foldedArr = Array.from(folded);
+  for (let i = 0; i < foldedArr.length; i++) {
+     const ch = foldedArr[i];
+     if (ch !== undefined && !PUNCT_REGEX.test(ch)) compact += ch;
+  }
+
+  return {original,codePoints:source,nfkc,folded,compact,nfkcToOriginal:map,toOriginalSpan(span){if(span.start<0||span.end<=span.start||span.end>map.length)throw new RangeError('gate_invalid_normalized_span');return {start:map[span.start]??0,end:(map[span.end-1]??source.length-1)+1}}}
+}
 export function cpSpan(text:string,startUtf16:number,endUtf16:number):TextSpan {const index=codePointIndex(text);return {start:index.toCodePointOffset(startUtf16),end:index.toCodePointOffset(endUtf16)} }
 export function sliceCodePoints(text:string,span:TextSpan):string{return codePointIndex(text).slice(span)}
