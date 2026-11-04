@@ -117,6 +117,7 @@ memory—none of which exists on an edge or serverless runtime.
 | `web/` | Chat application and admin console |
 | `infra/` | Reverse-proxy configuration |
 | `scripts/` | Safe Compose operations, smoke/acceptance verification, and release qualification |
+| `docs/api/API.md` | API reference and developer usage documentation |
 
 ## Legal and project policies
 
