@@ -28,7 +28,17 @@ export class DefaultGateEngine implements GateEngine {
   async evaluate(context:GateContext):Promise<GateVerdict>{
    try{
     const totalStart=performance.now();if(context.policySnapshot.tenantId!==context.subject.tenantId)throw new Error('gate_tenant_mismatch');let aggregate=0;
-    for(const part of context.parts){const size=Array.from(part.text).length;if(size>this.maxPart||(aggregate+=size)>this.maxAggregate)throw new Error('gate_input_too_large');if(!part.id)throw new Error('gate_part_id_required')}
+    for(const part of context.parts){
+      let size = 0;
+      for (let i = 0; i < part.text.length; i++) {
+        size++;
+        if (part.text.charCodeAt(i) >= 0xD800 && part.text.charCodeAt(i) <= 0xDBFF) {
+            i++;
+        }
+      }
+      if(size>this.maxPart||(aggregate+=size)>this.maxAggregate)throw new Error('gate_input_too_large');
+      if(!part.id)throw new Error('gate_part_id_required')
+    }
     const deterministicStart=performance.now(),matches:DetectorMatch[]=[],codes:string[]=[];let degraded=false,semanticUs=0;
     for(const detector of this.detectors){if(!detector.supportedPasses.has(context.pass))continue;const started=performance.now(),result=await runDetector(detector,context,this.options.audit);if(detector.stage>=100)semanticUs+=Math.round((performance.now()-started)*1000);matches.push(...result.matches);codes.push(...result.codes);degraded ||= result.degraded;if(detector.stage<100&&['block','require_approval'].includes(strongestAction(matches)))continue}
     const deterministicUs=Math.round((performance.now()-deterministicStart)*1000)-semanticUs,unique=deduplicateMatches(matches),action=strongestAction(unique),confirmed=action==='warn'&&Boolean(context.confirmedWarningToken),finalDisposition=disposition(context.pass,action,confirmed);let providerParts:readonly typeof context.parts[number][]|null=null,displayParts:readonly typeof context.parts[number][]|null=null,redactions:GateVerdict['redactions']=[],masks:GateVerdict['masks']=[],vaultUs=0;
