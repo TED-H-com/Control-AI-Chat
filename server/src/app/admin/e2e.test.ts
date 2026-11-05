@@ -87,7 +87,7 @@ function fixture() {
     };
   };
 
-  return { database, adapter, tenantId, userId, complianceUserId, request, policyId, ruleId };
+  return { database, adapter, tenantId, userId, complianceUserId, request, policyId, ruleId, detectorId };
 }
 
 function withMatch(req: RouteRequest, version: number): RouteRequest {
@@ -145,6 +145,56 @@ test('E2E tests for admin control dashboard API endpoints', async () => {
     const listEventsResponse = await auditAdapter.execute('audit.events', f.request(['owner'], null, { page: '1' }));
     assert.equal(listEventsResponse.status, undefined);
     assert.ok(Array.isArray((listEventsResponse.body as any).items));
+
+
+    const resGroupsList = await f.adapter.execute('admin.groups.list', f.request(['owner']));
+    const resModelsList = await f.adapter.execute('admin.models.list', f.request(['owner']));
+    const resAssistantsList = await f.adapter.execute('admin.assistants.list', f.request(['owner']));
+    const resProvidersList = await f.adapter.execute('admin.providers.list', f.request(['owner']));
+    const resSettingsGet = await f.adapter.execute('admin.settings.get', f.request(['owner']));
+    const resRetentionList = await f.adapter.execute('admin.retention.list', f.request(['owner']));
+    const resComplianceSummary = await f.adapter.execute('admin.compliance.summary', f.request(['owner']));
+    const resCapabilities = await f.adapter.execute('admin.capabilities', f.request(['owner']));
+
+    // Group Create
+    const createGroupReq = f.request(['owner'], { name: 'test group' });
+    createGroupReq.headers.set('Idempotency-Key', 'group-create');
+    const groupRes = await f.adapter.execute('admin.groups.create', createGroupReq);
+
+    // Budget Create
+    const createBudgetReq = f.request(['owner'], { name: 'test budget', window: 'monthly', limitMicroUsd: 1000 });
+    createBudgetReq.headers.set('Idempotency-Key', 'budget-create');
+    const budgetRes = await f.adapter.execute('budgets.create', createBudgetReq);
+
+    // Assistant Create
+    const createAssistantReq = f.request(['owner'], { name: 'test assistant' });
+    createAssistantReq.headers.set('Idempotency-Key', 'assistant-create');
+    const assistantRes = await f.adapter.execute('admin.assistants.create', createAssistantReq);
+
+    // Settings Update
+    const updateSettingsReq = f.request(['owner'], { supportContact: 'support@acme.test' });
+    updateSettingsReq.headers.set('Idempotency-Key', 'settings-update');
+    const resSettingsUpdate = await f.adapter.execute('admin.settings.update', withMatch(updateSettingsReq, 1));
+
+    // Rule Create
+    const createRuleReq = f.request(['owner'], { policyId: f.policyId, detectorId: f.detectorId, scopeType: 'tenant', direction: 'outbound', action: 'block', severity: 'high', configJson: '{}', enabled: true, priority: 100 });
+    createRuleReq.headers.set('Idempotency-Key', 'rule-create');
+    const ruleRes = await f.adapter.execute('gate.rules.create', createRuleReq);
+
+    // Legal Holds
+    const createLegalHoldReq = f.request(['owner'], { userId: f.userId, notes: 'test hold' });
+    createLegalHoldReq.headers.set('Idempotency-Key', 'legal-hold-create');
+    const legalHoldRes = await f.adapter.execute('admin.legalHolds.create', createLegalHoldReq);
+
+    const resLegalHoldsList = await f.adapter.execute('admin.legalHolds.list', f.request(['owner']));
+
+    const resLegalHoldsUsers = await f.adapter.execute('admin.legalHolds.users', f.request(['owner']));
+
+    // Detectors
+    const createDetectorReq = f.request(['owner'], { key: 'test-detector-2', kind: 'keyword', configJson: '{}', enabled: true });
+    createDetectorReq.headers.set('Idempotency-Key', 'detector-create');
+    const detectorRes = await f.adapter.execute('admin.detectors.create', createDetectorReq);
+
 
     f.database.close();
 });
