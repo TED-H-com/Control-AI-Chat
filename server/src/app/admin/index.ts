@@ -1,3 +1,4 @@
+import { PROVIDERS } from '../../lib/providers/registry.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { domainToASCII } from 'node:url';
 import type Database from 'better-sqlite3';
@@ -585,7 +586,7 @@ function createGroup(request:RouteRequest,deps:AdminAdapterDependencies,tx:Audit
 
 function createModel(request:RouteRequest,deps:AdminAdapterDependencies,tx:AuditTransaction,at:number,permit:Permit):RouteResult {
   permit(request,'model.tenant_access.update');const tenant=db(request),input=b(request),id=randomUUID();
-  const row=one(tenant.get(deps.statements.insertModel,id,s(input.provider,'provider',30),s(input.providerModelId??input.modelKey,'providerModelId',200),s(input.displayName,'displayName',200),boolInt(input.enabled)??1,0,integer(input.contextWindowTokens,'contextWindowTokens',1),integer(input.maxOutputTokens,'maxOutputTokens',1),integer(input.inputPriceMicroUsdPerMillion,'inputPrice',0),integer(input.outputPriceMicroUsdPerMillion,'outputPrice',0),json(input.capabilities??[]),input.preferenceWeight===undefined?0:integer(input.preferenceWeight,'preferenceWeight'),at,at));
+  const row=one(tenant.get(deps.statements.insertModel,id,choice(s(input.provider,'provider',30),'provider',PROVIDERS),s(input.providerModelId??input.modelKey,'providerModelId',200),s(input.displayName,'displayName',200),boolInt(input.enabled)??1,0,integer(input.contextWindowTokens,'contextWindowTokens',1),integer(input.maxOutputTokens,'maxOutputTokens',1),integer(input.inputPriceMicroUsdPerMillion,'inputPrice',0),integer(input.outputPriceMicroUsdPerMillion,'outputPrice',0),json(input.capabilities??[]),input.preferenceWeight===undefined?0:integer(input.preferenceWeight,'preferenceWeight'),at,at));
   const receipt=tx.append({tenantId:tenant.tenantId,action:'admin.model_access_changed',
     actor:{type:'user',id:request.tenant!.principal.userId,sessionId:request.tenant!.principal.sessionId,ip:null,userAgent:null,authMethod:null},
     target:{type:'model',id},outcome:'success',context:{requestId:request.requestId,traceId:null,source:'http',occurredAtMs:at},metadata:{}});
@@ -691,6 +692,7 @@ function changeGroupModelAccess(operation:'admin.models.enableForGroup'|'admin.m
   const versionRow=tenant.get(deps.statements.updateGroupVersion,nextVersion,groupId,expected);
   if(!versionRow){if(tenant.get(deps.statements.getGroup,groupId))changedSinceRead();throw new AdminError(404,'Resource was not found')}
   const enabled=operation==='admin.models.enableForGroup';
+  if(enabled){const model=tenant.get(deps.statements.getModel,modelId);if(model&&!(PROVIDERS as readonly string[]).includes(String(model.provider_key)))throw new AdminError(422,'Provider is not supported');}
   const result=enabled?tenant.run(deps.statements.enableGroupModel,groupId,modelId):tenant.run(deps.statements.disableGroupModel,groupId,modelId);
   if(result.changes===0)throw new AdminError(404,'Group or model was not found, or access already has that state',undefined,'group_model_state_unchanged');
   const version=Number(versionRow.updated_at);
@@ -705,6 +707,7 @@ function updateModel(request:RouteRequest,deps:AdminAdapterDependencies,tx:Audit
   const tenant=db(request),input=b(request),id=request.params.id!,pricingChanged=input.inputPriceMicroUsdPerMillion!==undefined||input.outputPriceMicroUsdPerMillion!==undefined;
   permit(request,pricingChanged?'model.pricing.update':'model.tenant_access.update');
   const expected=expectedVersion(request),updatedAt=Math.max(at,expected+1);
+  if(boolInt(input.enabled)===1){const model=tenant.get(deps.statements.getModel,id);if(model&&!(PROVIDERS as readonly string[]).includes(String(model.provider_key)))throw new AdminError(422,'Provider is not supported');}
   const row=tenant.get(deps.statements.updateModel,optionalString(input.displayName,200)??null,boolInt(input.enabled)??null,input.contextWindowTokens??null,input.maxOutputTokens??null,input.inputPriceMicroUsdPerMillion??null,input.outputPriceMicroUsdPerMillion??null,input.capabilities===undefined?null:json(input.capabilities),input.preferenceWeight===undefined?null:integer(input.preferenceWeight,'preferenceWeight'),updatedAt,id,expected);
   if(!row){if(tenant.get(deps.statements.getModel,id))changedSinceRead();throw new AdminError(404,'Resource was not found')}
   const receipt=tx.append({tenantId:tenant.tenantId,action:'admin.model_access_changed',

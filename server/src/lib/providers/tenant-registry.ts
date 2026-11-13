@@ -34,6 +34,7 @@ export function openProviderCredential(input:{tenantId:string;provider:ProviderI
 }
 
 export function setTenantProviderCredential(database:Database.Database,input:{tenantId:string;provider:ProviderId;secret:string;key:Uint8Array;keyVersion?:number;baseUrl?:string|null;now?:number}):{source:'byok';maskedSuffix:string}{
+  if(!(PROVIDERS as readonly string[]).includes(input.provider))throw new TypeError('Provider is not supported');
   const at=input.now??Date.now(),keyVersion=input.keyVersion??1,ciphertext=sealProviderCredential({...input,keyVersion}),suffix=input.secret.trim().slice(-4),metadata=JSON.stringify({maskedSuffix:suffix});
   database.prepare(`INSERT INTO provider_config(id,tenant_id,provider_key,enabled,credential_source,credential_ciphertext,key_version,base_url,config_json,created_at,updated_at)
     VALUES(?,?,?,1,'encrypted',?,?,?,?,?,?)

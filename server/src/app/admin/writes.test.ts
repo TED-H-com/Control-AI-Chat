@@ -1,3 +1,4 @@
+import { PROVIDERS } from '../../lib/providers/registry.js';
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -391,6 +392,18 @@ test('group POST rolls back and leaves its idempotency key reusable',async()=>{
   const replay=await f.makeAdapter().execute('admin.groups.create',request);
   assert.deepEqual(replay,accepted,'a fresh adapter must replay the recovered success from the database');
   f.database.close();
+});
+
+test('model creation rejects unsupported providers without writes and accepts every supported provider',async()=>{
+  const f=fixture();
+  try{
+    const body={provider:'not-a-provider',providerModelId:'catalog-entry',displayName:'Catalog entry',contextWindowTokens:4096,maxOutputTokens:512,inputPriceMicroUsdPerMillion:0,outputPriceMicroUsdPerMillion:0,capabilities:[]};
+    const count=f.count('SELECT COUNT(*) FROM model_catalog'),auditCount=f.auditInputs.length;
+    const refused=await f.adapter.execute('admin.models.create',f.request(body));assert.equal(refused.status,422);
+    assert.equal(f.count('SELECT COUNT(*) FROM model_catalog'),count);assert.equal(f.auditInputs.length,auditCount);
+    for(const provider of PROVIDERS){const created=await f.adapter.execute('admin.models.create',f.request({...body,provider}));assert.equal(created.status,201,provider);}
+    assert.equal(f.count('SELECT COUNT(*) FROM model_catalog'),count+PROVIDERS.length);
+  }finally{f.database.close();}
 });
 
 test('model POST durably replays one audited response and isolates the same key by tenant',async()=>{
@@ -809,6 +822,20 @@ test('group membership PUT and DELETE roll back and leave their idempotency keys
   f.database.close();
 });
 
+test('unsupported model providers cannot be enabled for a group and refusal preserves its version',async()=>{
+  const f=fixture(),groupId=randomUUID(),modelId=randomUUID();
+  try{
+    f.database.prepare('INSERT INTO groups(id,tenant_id,name,created_at,updated_at) VALUES(?,?,?,?,?)').run(groupId,f.tenantId,'Model access',AT,AT);
+    f.database.prepare('INSERT INTO model_catalog(tenant_id,id,provider_key,model_key,display_name,enabled,is_default,context_window,max_output_tokens,input_microusd_per_million,output_microusd_per_million,capabilities_json,preference_weight,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(f.tenantId,modelId,'not-a-provider','unsupported','Unsupported',1,0,4096,512,0,0,'[]',0,AT,AT);
+    f.database.prepare('INSERT INTO group_model_access(group_id,model_catalog_id,enabled) VALUES(?,?,1)').run(groupId,modelId);
+    const refused=await f.adapter.execute('admin.models.enableForGroup',withMatch(f.request({}, {groupId,modelId}),AT));
+    assert.equal(refused.status,422);assert.equal(errorMessage(refused),'Provider is not supported');
+    assert.equal(f.database.prepare('SELECT updated_at FROM groups WHERE id=?').pluck().get(groupId),AT);
+    const disabled=await f.adapter.execute('admin.models.disableForGroup',withMatch(f.request(null,{groupId,modelId}),AT));
+    assert.equal(disabled.status,204);assert.equal(f.database.prepare('SELECT enabled FROM group_model_access WHERE group_id=? AND model_catalog_id=?').pluck().get(groupId,modelId),0);
+  }finally{f.database.close();}
+});
+
 test('group-model PUT and DELETE share a version fence, replay exactly, and stay tenant-scoped',async()=>{
   const routes=routeDefinitions.filter(definition=>definition.path==='/admin/groups/:groupId/models/:modelId');
   assert.deepEqual(routes.map(route=>({method:route.method,operation:route.operation,ifMatch:route.ifMatch,idempotency:route.idempotency})),[
@@ -906,6 +933,24 @@ test('group-model PUT and DELETE roll back and leave their idempotency keys reus
   assert.deepEqual(replayedEnable,acceptedEnable,'a fresh adapter must replay the recovered success from the database');
   assert.deepEqual(replayedDisable,acceptedDisable,'a fresh adapter must replay the recovered success from the database');
   f.database.close();
+});
+
+test('unsupported model provider PATCH rejects enabling but permits disabling and renaming',async()=>{
+  const f=fixture(),id=randomUUID();
+  try{
+    f.database.prepare('INSERT INTO model_catalog(tenant_id,id,provider_key,model_key,display_name,enabled,is_default,context_window,max_output_tokens,input_microusd_per_million,output_microusd_per_million,capabilities_json,preference_weight,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(f.tenantId,id,'not-a-provider','unsupported','Unsupported',1,0,4096,512,0,0,'[]',0,AT,AT);
+    const before=f.database.prepare('SELECT * FROM model_catalog WHERE id=?').get(id);
+    const route=routeDefinitions.find(definition=>definition.method==='PATCH'&&definition.path==='/admin/models/:id');assert.ok(route);
+    const app=new Hono<{Variables:AppVariables}>();app.onError(handleRequestError);
+    const base=f.request(null).tenant!;
+    app.use('*',async(c,next)=>{const principal={...base.principal,permissions:new Set<Permission>(['model:write'])};c.set('requestId','unsupported-model');c.set('tenant',{...base,principal,requestId:'unsupported-model'});await next()});
+    mountDefinitions(app,{execute:(operation,request)=>f.adapter.execute(operation,request)},[route]);
+    const patch=(body:unknown)=>app.request(`/admin/models/${id}`,{method:'PATCH',headers:{'Content-Type':'application/json','If-Match':`"${AT}"`,'Idempotency-Key':randomUUID()},body:JSON.stringify(body)});
+    const refused=await patch({enabled:true});assert.equal(refused.status,422);
+    assert.deepEqual(f.database.prepare('SELECT * FROM model_catalog WHERE id=?').get(id),before);
+    const disabled=await patch({enabled:false,displayName:'Disabled entry'});assert.equal(disabled.status,200);
+    assert.deepEqual(f.database.prepare('SELECT enabled,display_name FROM model_catalog WHERE id=?').get(id),{enabled:0,display_name:'Disabled entry'});
+  }finally{f.database.close();}
 });
 
 test('model PATCH reads a version, fences stale writes, replays exactly, and stays tenant-scoped',async()=>{

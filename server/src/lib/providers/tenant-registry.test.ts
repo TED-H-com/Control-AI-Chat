@@ -20,6 +20,16 @@ test('provider credentials cannot be opened with an audit-root-derived key',()=>
   assert.throws(()=>openProviderCredential({tenantId:'tenant-a',provider:'openai',ciphertext:sealed,key:auditKey,keyVersion:1}));
 });
 
+test('unsupported provider credentials throw without writing configuration',()=>{
+  const database=new Database(':memory:');database.pragma('foreign_keys=ON');runMigrations(database);
+  const tenantId=randomUUID(),at=1_700_000_000_000;
+  try{
+    database.prepare("INSERT INTO tenants(id,slug,name,status,created_at,updated_at) VALUES(?,?,'Tenant','active',?,?)").run(tenantId,'unsupported-provider',at,at);
+    assert.throws(()=>setTenantProviderCredential(database,{tenantId,provider:'not-a-provider' as Parameters<typeof setTenantProviderCredential>[1]['provider'],secret:'fixture',key,now:at}),{name:'TypeError',message:'Provider is not supported'});
+    assert.equal(database.prepare('SELECT COUNT(*) FROM provider_config').pluck().get(),0);
+  }finally{database.close();}
+});
+
 test('tenant BYOK is write-only, isolated, and clearing it disables the provider',()=>{
   const database=new Database(':memory:');database.pragma('foreign_keys=ON');runMigrations(database);
   const tenantA=randomUUID(),tenantB=randomUUID(),at=1_700_000_000_000;
