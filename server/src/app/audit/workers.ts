@@ -195,9 +195,9 @@ export function startAuditWorkers(deps:AuditWorkerDependencies):AuditWorkers {
     {name:'single-model-recovery',initialMs:12_000,intervalMs:5*60_000,run:singleModelRecovery},
   ];
   if(deps.retentionEnforcementEnabled===false)logger.info?.('New conversation and file retention purges are disabled; the retention worker will only reconcile an interrupted prepared file deletion until RETENTION_ENFORCEMENT_ENABLED=true');
-  for(const spec of specs)schedule(spec);
-  function schedule(spec:TimerSpec):void {const first=setTimeout(()=>tick(spec),spec.initialMs);first.unref();timers.add(first);}
-  function tick(spec:TimerSpec):void {if(stopped)return;const job=Promise.resolve().then(spec.run).catch(e=>logger.error(`Audit worker ${spec.name} failed`,e)).finally(()=>{active.delete(job);if(!stopped){const timer=setTimeout(()=>tick(spec),spec.intervalMs);timer.unref();timers.add(timer);}});active.add(job);}
+  for(const spec of specs)schedule(spec,spec.initialMs);
+  function schedule(spec:TimerSpec,delayMs:number):void {const timer=setTimeout(()=>{timers.delete(timer);tick(spec);},delayMs);timer.unref();timers.add(timer);}
+  function tick(spec:TimerSpec):void {if(stopped)return;const job=Promise.resolve().then(spec.run).catch(e=>logger.error(`Audit worker ${spec.name} failed`,e)).finally(()=>{active.delete(job);if(!stopped)schedule(spec,spec.intervalMs);});active.add(job);}
   return {get running(){return !stopped;},async stop(){if(stopped)return;stopped=true;for(const timer of timers)clearTimeout(timer);timers.clear();await Promise.allSettled(active);}};
 }
 
