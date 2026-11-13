@@ -16,7 +16,7 @@ for(const [network,prefix] of [
   ['192.0.0.0',24],['192.0.2.0',24],['192.168.0.0',16],['198.18.0.0',15],['198.51.100.0',24],
   ['203.0.113.0',24],['224.0.0.0',4],['240.0.0.0',4],['255.255.255.255',32],
 ] as const)blocked.addSubnet(network,prefix,'ipv4');
-for(const [network,prefix] of [['::1',128],['::',128],['64:ff9b::',96],['64:ff9b:1::',48],['100::',64],['2001:db8::',32],['fc00::',7],['fec0::',10],['fe80::',10],['ff00::',8]] as const)
+for(const [network,prefix] of [['::',96],['::1',128],['::',128],['64:ff9b::',96],['64:ff9b:1::',48],['100::',64],['2001:db8::',32],['fc00::',7],['fec0::',10],['fe80::',10],['ff00::',8]] as const)
   blocked.addSubnet(network,prefix,'ipv6');
 
 function mappedIpv4(address:string):string|null{

@@ -16,8 +16,8 @@ test('SSRF address classifier rejects private, metadata, mapped, CGNAT, unspecif
 });
 
 test('SSRF address classifier rejects IPv6 transition and deprecated local ranges',()=>{
- for(const address of ['2002:7f00:1::','fec0::1','64:ff9b:1::1'])assert.equal(isBlockedIp(address),true,address);
- assert.equal(isBlockedIp('2002:5db8:d822::'),false);
+ for(const address of ['::7f00:1','::127.0.0.1','::a9fe:a9fe','2002:7f00:1::','fec0::1','64:ff9b:1::1'])assert.equal(isBlockedIp(address),true,address);
+ for(const address of ['2002:5db8:d822::','2606:4700:4700::1111'])assert.equal(isBlockedIp(address),false,address);
 });
 
 test('URL validation rejects forbidden schemes, credentials, ports, and local names',async()=>{
@@ -30,7 +30,7 @@ test('IPv6 loopback literals are rejected as private addresses',async()=>{
 });
 
 test('provider base URLs reject loopback, metadata, and mapped metadata addresses',()=>{
-  for(const url of ['https://127.0.0.1/v1','https://169.254.169.254/latest','https://[::ffff:169.254.169.254]/v1'])
+  for(const url of ['https://127.0.0.1/v1','https://169.254.169.254/latest','https://[::ffff:169.254.169.254]/v1','https://[::7f00:1]/v1'])
     assert.throws(()=>validateProviderBaseUrl(url),error=>error instanceof SafeFetchError&&error.code==='private_address',url);
   assert.throws(()=>validateProviderBaseUrl('http://api.example.com/v1'),error=>error instanceof SafeFetchError&&error.code==='scheme_forbidden');
 });
