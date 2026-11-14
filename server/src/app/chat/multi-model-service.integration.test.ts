@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { createAuditService } from '../../lib/audit/index.js';
 import { forTenant } from '../../lib/db.js';
 import { provisionTestTenant } from '../../test/tenant-fixture.js';
-import type { GateContext, GateEngine, GateVerdict } from '../../lib/gate/index.js';
+import { DefaultGateEngine, StatelessGateVault, deterministicDetectors, type GateContext, type GateEngine, type GateVerdict } from '../../lib/gate/index.js';
 import { estimateModelCostMicrousd } from '../../lib/governance/index.js';
 import type { TenantContext } from '../../lib/http/index.js';
 import { runMigrations } from '../../lib/migrations/index.js';
@@ -242,4 +242,53 @@ test('restart recovery never redispatches and bills only authoritative multi-mod
     assert.equal(database.prepare('SELECT COUNT(*) FROM usage_records').pluck().get(),usageBefore,'startup recovery without checkpoints must not create usage');
     assert.equal(database.prepare('SELECT status FROM multi_model_workflows WHERE id=?').pluck().get(startup.workflow_id),'indeterminate');
   }finally{app.stop();database.close();}
+});
+
+async function policyFixture(direction:'outbound'|'inbound'='outbound'){
+  const database=new Database(':memory:');database.pragma('foreign_keys=ON');runMigrations(database);
+  const workspace=provisionTestTenant(database,{email:'user-a@example.test',name:'Test',now:NOW}),tenantId=workspace.tenantId as TenantId;
+  const models=database.prepare("SELECT id,provider_key FROM model_catalog WHERE tenant_id=? AND multi_model_eligible=1 AND provider_key IN ('openai','anthropic','google') GROUP BY provider_key ORDER BY provider_key").all(tenantId) as Array<{id:string;provider_key:ProviderId}>;
+  assert.equal(models.length,3);const a=models[0]!,b=models[2]!,c=models[1]!;
+  database.prepare('UPDATE model_catalog SET enabled=CASE WHEN id IN (?,?) THEN 1 ELSE 0 END WHERE tenant_id=?').run(a.id,b.id,tenantId);
+  database.prepare('UPDATE model_catalog SET input_microusd_per_million=10000000,output_microusd_per_million=10000000 WHERE tenant_id=? AND id=?').run(tenantId,a.id);
+  database.prepare('UPDATE model_catalog SET input_microusd_per_million=1000,output_microusd_per_million=1000 WHERE tenant_id=? AND id=?').run(tenantId,b.id);
+  const policyId=randomUUID(),detectorId=randomUUID();
+  database.prepare('UPDATE policies SET enabled=0 WHERE tenant_id=?').run(tenantId);
+  database.prepare("INSERT INTO policies(id,tenant_id,name,created_at,updated_at) VALUES(?,?,'Model policy',?,?)").run(policyId,tenantId,NOW,NOW);
+  database.prepare("INSERT INTO detector_definitions(id,tenant_id,key,kind,config_json,config_sha256,created_at,updated_at) VALUES(?,?,?,'keyword','{}',?,?,?)").run(detectorId,tenantId,'model-keyword','a'.repeat(64),NOW,NOW);
+  database.prepare("INSERT INTO policy_rules(id,tenant_id,policy_id,detector_id,scope_type,scope_id,direction,action,severity,config_json,enabled,priority,created_at,updated_at) VALUES(?,?,?,?,'model',?,?,'block','high',?,1,100,?,?)").run(randomUUID(),tenantId,policyId,detectorId,b.id,direction,JSON.stringify({terms:[direction==='inbound'?'Consolidated':'restricted'],regexes:[],wholeWord:false,maxMatches:20}),NOW,NOW);
+  const tenant={principal:{tenantId,userId:workspace.ownerUserId,membershipId:workspace.ownerUserId,sessionId:randomUUID(),roles:['owner'],permissions:new Set(['chat:use'])},db:forTenant({tenantId}),requestId:randomUUID(),now:new Date(NOW)} as TenantContext;
+  const calls:ProviderCall[]=[],providers=new Map<ProviderId,ChatProvider>([a,b,c].map(m=>[m.provider_key,fakeProvider(m.provider_key,calls)]));
+  const gate=new DefaultGateEngine({detectors:deterministicDetectors(),vault:new StatelessGateVault()});
+  const audit=createAuditService({database,ipHmacKey:Buffer.alloc(32,1),transcriptKey:()=>Buffer.alloc(32,2),retentionPolicy:id=>({tenantId:id,chatTranscriptDays:90,violationTranscriptDays:365,approvalPayloadDays:30,auditMetadataDays:null,captureTranscripts:false,effectiveAtMs:NOW}),now:()=>NOW});
+  const app=new GovernedChatApplication({database,gate,providers:{get(id){const provider=providers.get(id);if(!provider)throw new Error('Unexpected provider');return provider;}},audit,approvalPayloadKey:Buffer.alloc(32,3),multiModelResultKey:Buffer.alloc(32,4),now:()=>NOW});
+  async function prepare(mode:'single'|'auto'|'multi_model',content='restricted'){
+    const key=randomUUID();return app.createRun(tenant,{content,mode,...(mode==='single'?{modelId:a.id}:{}),clientRequestId:randomUUID()},'create',{key,requestHash:'a'.repeat(64),method:'POST',path:'/chat/runs'});
+  }
+  async function preflight(prepared:Awaited<ReturnType<typeof prepare>>){return app.gate(tenant,{direction:'outbound',text:prepared.outboundText,runId:prepared.run.id},new AbortController().signal);}
+  return {database,tenantId,tenant,a,b,c,app,calls,prepare,preflight,close(){app.stop();database.close();}};
+}
+
+test('multi-model preflight enforces a block scoped to a non-representative participant',async()=>{
+  const f=await policyFixture();try{const prepared=await f.prepare('multi_model');assert.equal(prepared.assistant.modelId,f.a.id);const result=await f.preflight(prepared);assert.equal(result.action,'block');assert.equal(f.calls.length,0);}finally{f.close();}
+});
+
+test('single model does not inherit another model rule',async()=>{
+  const f=await policyFixture();try{const prepared=await f.prepare('single'),result=await f.preflight(prepared);assert.equal(result.action,'allow');const reservation=await f.app.reserveBudget(f.tenant,prepared.run);await f.app.dispatchStarted(f.tenant,prepared.run,reservation);for await(const _ of f.app.streamProvider(f.tenant,prepared.providerRequest,{preflightDecisionId:result.decisionId,reservationId:reservation.id,effectiveText:result.effectiveText},new AbortController().signal)){}assert.equal(f.calls.length,1);assert.equal(f.calls[0]?.provider,f.a.provider_key);}finally{f.close();}
+});
+
+test('multi-model inbound applies a participant rule to the final answer',async()=>{
+  const f=await policyFixture('inbound');try{const prepared=await f.prepare('multi_model','safe');const result=await f.preflight(prepared);assert.equal(result.action,'allow');const reservation=await f.app.reserveBudget(f.tenant,prepared.run);await f.app.dispatchStarted(f.tenant,prepared.run,reservation);await assert.rejects(async()=>{for await(const _ of f.app.streamProvider(f.tenant,prepared.providerRequest,{preflightDecisionId:result.decisionId,reservationId:reservation.id,effectiveText:result.effectiveText},new AbortController().signal)){}},{code:'GATE_BLOCKED'});assert.equal(f.calls.length,5);}finally{f.close();}
+});
+
+test('multi-model inbound applies the rule of a participant that did not consolidate',async()=>{
+  const f=await policyFixture('inbound');try{f.database.prepare("UPDATE policy_rules SET scope_id=? WHERE tenant_id=? AND scope_type='model'").run(f.a.id,f.tenantId);const prepared=await f.prepare('multi_model','safe');const result=await f.preflight(prepared);assert.equal(result.action,'allow');const reservation=await f.app.reserveBudget(f.tenant,prepared.run);await f.app.dispatchStarted(f.tenant,prepared.run,reservation);await assert.rejects(async()=>{for await(const _ of f.app.streamProvider(f.tenant,prepared.providerRequest,{preflightDecisionId:result.decisionId,reservationId:reservation.id,effectiveText:result.effectiveText},new AbortController().signal)){}},{code:'GATE_BLOCKED'});assert.equal(f.calls.length,5);assert.notEqual(f.calls.find(call=>call.step==='consolidate')?.provider,f.a.provider_key);}finally{f.close();}
+});
+
+test('multi-model route change fences a newly scoped policy',async()=>{
+  const f=await policyFixture();try{f.database.prepare("UPDATE policy_rules SET scope_id=? WHERE tenant_id=? AND scope_type='model'").run(f.c.id,f.tenantId);const prepared=await f.prepare('multi_model','safe');assert.equal((await f.preflight(prepared)).action,'allow');f.database.prepare('UPDATE model_catalog SET enabled=CASE WHEN id IN (?,?) THEN 1 ELSE 0 END WHERE tenant_id=?').run(f.a.id,f.c.id,f.tenantId);await assert.rejects(f.app.reserveBudget(f.tenant,prepared.run),{code:'POLICY_VERSION_CHANGED'});assert.equal(f.calls.length,0);}finally{f.close();}
+});
+
+for(const changed of [true,false])test(`automatic route change ${changed?'fences different':'permits identical'} policies`,async()=>{
+  const f=await policyFixture();try{if(!changed)f.database.prepare('UPDATE policy_rules SET enabled=0 WHERE tenant_id=?').run(f.tenantId);f.database.prepare('UPDATE model_catalog SET enabled=CASE WHEN id=? THEN 1 ELSE 0 END WHERE tenant_id=?').run(f.a.id,f.tenantId);const prepared=await f.prepare('auto','safe');assert.equal(prepared.assistant.modelId,f.a.id);const result=await f.preflight(prepared);assert.equal(result.action,'allow');f.database.prepare('UPDATE model_catalog SET enabled=CASE WHEN id=? THEN 1 ELSE 0 END WHERE tenant_id=?').run(f.b.id,f.tenantId);if(changed){await assert.rejects(f.app.reserveBudget(f.tenant,prepared.run),{code:'POLICY_VERSION_CHANGED'});assert.equal(f.calls.length,0);}else{const reservation=await f.app.reserveBudget(f.tenant,prepared.run);await f.app.dispatchStarted(f.tenant,prepared.run,reservation);for await(const _ of f.app.streamProvider(f.tenant,prepared.providerRequest,{preflightDecisionId:result.decisionId,reservationId:reservation.id,effectiveText:result.effectiveText},new AbortController().signal)){}assert.equal(f.calls.length,1);assert.equal(f.calls[0]?.provider,f.b.provider_key);}}finally{f.close();}
 });
