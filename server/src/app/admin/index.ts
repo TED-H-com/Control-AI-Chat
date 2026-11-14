@@ -533,6 +533,7 @@ function userMutation(operation:'admin.users.update'|'admin.users.delete',reques
     const expected=expectedVersion(request),updatedAt=Math.max(at,expected+1);
     const row=tenant.get(deps.statements.updateUser,optionalString(input.displayName,200)??null,status??null,optionalLocale(input.locale,'locale')??null,updatedAt,target,expected);
     if(!row){if(tenant.get(deps.statements.getUser,target))changedSinceRead();throw new AdminError(404,'Resource was not found')}
+    if(status!==undefined&&status!=='active')tenant.run(deps.statements.forceLogoutUserSessions,at,'admin_suspended',target);
     if(input.role!==undefined)assignRole(request,tenant,deps.statements,target,s(input.role,'role',30) as TenantRole,at,permit);
     const receipt=audit(input.role!==undefined?'admin.role_changed':'admin.user_updated',target,{fields});
     if(input.status==='active'&&previous.status!=='active')audit('admin.user_enabled',target);
@@ -546,6 +547,7 @@ function userMutation(operation:'admin.users.update'|'admin.users.delete',reques
     const expected=expectedVersion(request),updatedAt=Math.max(at,expected+1),deleted=tenant.run(deps.statements.deleteUser,updatedAt,updatedAt,target,expected);
     if(deleted.changes===0){if(tenant.get(deps.statements.getUser,target))changedSinceRead();throw new AdminError(404,'Resource not found')}
     tenant.run(deps.statements.cancelUserCredentialLinks,updatedAt,target);
+    tenant.run(deps.statements.forceLogoutUserSessions,at,'admin_deprovisioned',target);
     audit('admin.user_deleted',target);return {status:204};
   }
   throw new AdminError(404,'Resource not found');

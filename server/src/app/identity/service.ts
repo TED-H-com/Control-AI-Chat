@@ -53,6 +53,8 @@ export function createIdentityService(options:IdentityServiceOptions):{execute(o
  const permissionsForUser=db.prepare<[TenantId,string],{permission_key:string}>('SELECT DISTINCT rp.permission_key FROM user_roles ur JOIN role_permissions rp ON rp.role_id=ur.role_id WHERE ur.tenant_id=? AND ur.user_id=? ORDER BY rp.permission_key');
  const roleForUser=db.prepare<[TenantId,string],{key:TenantRole}>("SELECT r.key FROM user_roles ur JOIN roles r ON r.id=ur.role_id WHERE ur.tenant_id=? AND ur.user_id=? AND r.key IN ('owner','admin','compliance','member') ORDER BY CASE r.key WHEN 'owner' THEN 0 WHEN 'admin' THEN 1 WHEN 'compliance' THEN 2 ELSE 3 END LIMIT 1");
  const recentMfaSession=db.prepare(`WITH tenant_scope(id,now_ms,cutoff_ms) AS (VALUES (?,?,?)) SELECT id FROM sessions WHERE tenant_id=(SELECT id FROM tenant_scope) AND id=? AND user_id=? AND auth_method='mfa' AND mfa_verified_at_ms IS NOT NULL AND mfa_verified_at_ms>=(SELECT cutoff_ms FROM tenant_scope) AND revoked_at IS NULL AND expires_at>(SELECT now_ms FROM tenant_scope)`) as Database.Statement<[TenantId,...unknown[]],{id:string}>;
+ const revokeOtherSessionsStmt=db.prepare('WITH tenant_scope(id) AS (VALUES (?)) UPDATE sessions SET revoked_at=?,revoke_reason=? WHERE tenant_id=(SELECT id FROM tenant_scope) AND user_id=? AND id<>? AND revoked_at IS NULL') as Database.Statement<[TenantId,...unknown[]]>;
+ const revokeOtherSessions=(scope:ReturnType<typeof forTenant>,userId:string,sessionId:string,at:number,reason:string):number=>scope.run(revokeOtherSessionsStmt,at,reason,userId,sessionId).changes;
  const requestClientIp=(request:RouteRequest):string|null=>{const value=request.headers.get('X-Gateway-Client-IP');return value==='unknown'?null:value;};
  const httpAudit=(request:RouteRequest,tenantId:TenantId,action:string,actorUserId:string|null,targetId:string|null,metadata:Readonly<Record<string,unknown>>={},actorSessionId:string|null=null)=>options.audit.append({
   tenantId,action,actorUserId,actorSessionId,requestId:request.requestId,targetId,
@@ -214,7 +216,7 @@ export function createIdentityService(options:IdentityServiceOptions):{execute(o
   if(operation==='identity.updateMe'){const t=tenant(request),name=text(input.displayName,'displayName').normalize('NFC').slice(0,200);forTenant({tenantId:t.principal.tenantId}).run(db.prepare('WITH tenant_scope(id) AS (VALUES (?)) UPDATE users SET display_name=?,updated_at=? WHERE tenant_id=(SELECT id FROM tenant_scope) AND id=?') as Database.Statement<[TenantId,...unknown[]]>,name,at,t.principal.userId);return{body:{id:t.principal.userId,displayName:name}};}
   if(operation==='identity.sessions'){const t=tenant(request),rows=forTenant({tenantId:t.principal.tenantId}).all(db.prepare<[TenantId,string],SessionListRow>('SELECT id,auth_method,created_at,last_seen_at,expires_at,revoked_at,user_agent FROM sessions WHERE tenant_id=? AND user_id=? ORDER BY created_at DESC'),t.principal.userId);return{body:{items:rows.map(r=>({...r,current:r.id===t.principal.sessionId}))}};}
   if(operation==='identity.revokeSession'){const t=tenant(request),id=text(request.params.id,'id');const owned=forTenant({tenantId:t.principal.tenantId}).get(db.prepare<[TenantId,string,string],{id:string}>('SELECT id FROM sessions WHERE tenant_id=? AND id=? AND user_id=?'),id,t.principal.userId);if(!owned)throw new IdentityError('NOT_FOUND','Session not found');revokeSession(db,t.principal.tenantId,id,'user_revoked');await httpAudit(request,t.principal.tenantId,'auth.session_revoked',t.principal.userId,id,{});return{status:204};}
-  if(operation==='identity.revokeOthers'){const t=tenant(request);const result=forTenant({tenantId:t.principal.tenantId}).run(db.prepare('WITH tenant_scope(id) AS (VALUES (?)) UPDATE sessions SET revoked_at=?,revoke_reason=? WHERE tenant_id=(SELECT id FROM tenant_scope) AND user_id=? AND id<>? AND revoked_at IS NULL') as Database.Statement<[TenantId,...unknown[]]>,at,'revoke_others',t.principal.userId,t.principal.sessionId);await httpAudit(request,t.principal.tenantId,'auth.sessions_revoked',t.principal.userId,null,{count:result.changes});return{body:{revoked:result.changes}};}
+  if(operation==='identity.revokeOthers'){const t=tenant(request);const revoked=revokeOtherSessions(forTenant({tenantId:t.principal.tenantId}),t.principal.userId,t.principal.sessionId,at,'revoke_others');await httpAudit(request,t.principal.tenantId,'auth.sessions_revoked',t.principal.userId,null,{count:revoked});return{body:{revoked}};}
   if(operation==='identity.mfaSetup'){
    const t=tenant(request),scope=forTenant({tenantId:t.principal.tenantId});
    const issuer=(scope.get(db.prepare<[TenantId],{brand_name:string|null}>('SELECT brand_name FROM tenant_settings WHERE tenant_id=?'))?.brand_name?.trim()||PRODUCT_NAME).slice(0,200),secret=generateTotpSecret(),encrypted=encryptSecret(secret,options.encryptionKey);
@@ -241,7 +243,9 @@ export function createIdentityService(options:IdentityServiceOptions):{execute(o
     scope.run(db.prepare<[TenantId,string]>('DELETE FROM mfa_recovery_codes WHERE tenant_id=? AND user_id=?'),t.principal.userId);
     const insert=db.prepare<[TenantId,string,string,number]>('INSERT INTO mfa_recovery_codes(tenant_id,user_id,code_digest,created_at) VALUES(?,?,?,?)');for(const digest of digests)scope.run(insert,t.principal.userId,digest,at);
     scope.run(db.prepare<[TenantId,string]>('DELETE FROM mfa_enrollments WHERE tenant_id=? AND user_id=?'),t.principal.userId);
-    httpAudit(request,t.principal.tenantId,'auth.mfa_enabled',t.principal.userId,t.principal.userId,{});
+    // A session opened before the second factor existed (or with the replaced one) must not outlive it.
+    const sessionsRevoked=revokeOtherSessions(scope,t.principal.userId,t.principal.sessionId,at,'mfa_enrolled');
+    httpAudit(request,t.principal.tenantId,'auth.mfa_enabled',t.principal.userId,t.principal.userId,{sessionsRevoked});
     return generated;
    }).immediate();
    if(!codes)throw new IdentityError('MFA_INVALID','MFA enrollment not found or expired');
@@ -255,20 +259,23 @@ export function createIdentityService(options:IdentityServiceOptions):{execute(o
     scope.run(db.prepare<[TenantId,string]>('DELETE FROM mfa_enrollments WHERE tenant_id=? AND user_id=?'),t.principal.userId);
     scope.run(db.prepare<[TenantId,string]>('DELETE FROM mfa_recovery_codes WHERE tenant_id=? AND user_id=?'),t.principal.userId);
     scope.run(db.prepare<[TenantId,string]>('DELETE FROM mfa_login_challenges WHERE tenant_id=? AND user_id=?'),t.principal.userId);
-    httpAudit(request,t.principal.tenantId,'auth.mfa_disabled',t.principal.userId,t.principal.userId,{});
+    const sessionsRevoked=revokeOtherSessions(scope,t.principal.userId,t.principal.sessionId,at,'mfa_disabled');
+    httpAudit(request,t.principal.tenantId,'auth.mfa_disabled',t.principal.userId,t.principal.userId,{sessionsRevoked});
    }).immediate();
    return{status:204};
   }
   if(operation==='auth.passwordChange'){
    const t=tenant(request),u=forTenant({tenantId:t.principal.tenantId}).get(userById,t.principal.userId);
    if(!u?.password_hash||!await verifyPassword(text(input.currentPassword,'currentPassword'),u.password_hash))throw new IdentityError('INVALID_CREDENTIALS','Current password is invalid');
-   const hash=await hashPassword(text(input.newPassword,'newPassword'));
+   const currentHash=u.password_hash,hash=await hashPassword(text(input.newPassword,'newPassword'));
    const revoked=db.transaction(()=>{
     const scope=forTenant({tenantId:t.principal.tenantId});
-    scope.run(db.prepare('WITH tenant_scope(id) AS (VALUES (?)) UPDATE users SET password_hash=?,updated_at=? WHERE tenant_id=(SELECT id FROM tenant_scope) AND id=?') as Database.Statement<[TenantId,...unknown[]]>,hash,at,t.principal.userId);
-    const result=scope.run(db.prepare('WITH tenant_scope(id) AS (VALUES (?)) UPDATE sessions SET revoked_at=?,revoke_reason=? WHERE tenant_id=(SELECT id FROM tenant_scope) AND user_id=? AND id<>? AND revoked_at IS NULL') as Database.Statement<[TenantId,...unknown[]]>,at,'password_changed',t.principal.userId,t.principal.sessionId);
-    httpAudit(request,t.principal.tenantId,'auth.password_changed',t.principal.userId,t.principal.userId,{sessionsRevoked:result.changes},t.principal.sessionId);
-    return result.changes;
+    // Require the verified hash to still match so a concurrent change verified against the same
+    // current password cannot overwrite the newly committed password.
+    if(scope.run(db.prepare('WITH tenant_scope(id) AS (VALUES (?)) UPDATE users SET password_hash=?,updated_at=? WHERE tenant_id=(SELECT id FROM tenant_scope) AND id=? AND password_hash=?') as Database.Statement<[TenantId,...unknown[]]>,hash,at,t.principal.userId,currentHash).changes!==1)throw new IdentityError('INVALID_CREDENTIALS','Current password is invalid');
+    const sessionsRevoked=revokeOtherSessions(scope,t.principal.userId,t.principal.sessionId,at,'password_changed');
+    httpAudit(request,t.principal.tenantId,'auth.password_changed',t.principal.userId,t.principal.userId,{sessionsRevoked},t.principal.sessionId);
+    return sessionsRevoked;
    }).immediate();
    return{body:{changed:true,sessionsRevoked:revoked}};
   }

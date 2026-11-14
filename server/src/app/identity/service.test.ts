@@ -126,7 +126,7 @@ test('MFA enrollment stays pending until verified, remains tenant-isolated, and 
  await identity.execute('auth.logout',privateRequest({}));
 
  assert.deepEqual(inputs.map(input=>input.action),['auth.login_succeeded','auth.login_failed','auth.password_changed','auth.login_succeeded','auth.login_succeeded','auth.mfa_enabled','auth.mfa_challenge_issued','auth.mfa_challenge_issued','auth.login_failed','auth.login_succeeded','auth.mfa_challenge_issued','auth.login_failed','auth.login_succeeded','auth.mfa_disabled','auth.session_revoked','auth.sessions_revoked','auth.logout']);
- assert.deepEqual(inputs.find(input=>input.action==='auth.mfa_enabled')?.metadata,{});
+ assert.deepEqual(inputs.find(input=>input.action==='auth.mfa_enabled')?.metadata,{sessionsRevoked:2});
  assert.doesNotMatch(JSON.stringify(inputs),new RegExp(recoveryCodeDigest(recoveryCodes[0]!,'pepper'),'u'),'recovery-code digests are authentication data, not audit metadata');
  for(const input of inputs)assert.deepEqual({clientIp:input.clientIp,userAgent:input.userAgent,requestId:input.requestId},{clientIp,userAgent,requestId},`${input.action} lost its HTTP attribution`);
  db.close();
