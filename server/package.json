@@ -23,7 +23,7 @@
     "bcryptjs": "^3.0.2",
     "better-sqlite3": "^12.2.0",
     "dotenv": "^17.2.1",
-    "hono": "^4.13.5",
+    "hono": "^4.13.17",
     "nodemailer": "^10.1.1",
     "pdfjs-dist": "^6.3.289"
   },
