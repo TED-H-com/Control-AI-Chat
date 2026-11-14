@@ -21,7 +21,7 @@ export function governedPipelineError(error:unknown,requestId:string,cancelled:b
   }
   if(code==='provider_not_allowed')return errorEnvelope('PROVIDER_UNAVAILABLE','The selected provider is unavailable',requestId,{retryable:false,details:{reason:'chat_provider_not_allowed'}}).error;
   if(code==='PROVIDER_UNAVAILABLE')return errorEnvelope('PROVIDER_UNAVAILABLE','The selected provider is unavailable',requestId,{retryable:true}).error;
-  if(code==='PRECONDITION_FAILED')return errorEnvelope('PRECONDITION_FAILED','Policy changed before dispatch. Send the message again',requestId,{retryable:true,details:{reason:'chat_policy_changed'}}).error;
+  if(code==='PRECONDITION_FAILED'||code==='POLICY_VERSION_CHANGED')return errorEnvelope('PRECONDITION_FAILED','Policy changed before dispatch. Send the message again',requestId,{retryable:true,details:{reason:'chat_policy_changed'}}).error;
   if(code==='GATE_BLOCKED')return errorEnvelope('GATE_BLOCKED','The response was withheld by policy',requestId,{retryable:false}).error;
   if(code==='VALIDATION_FAILED')return errorEnvelope('VALIDATION_FAILED','The request is not valid',requestId,{retryable:false,...(ownReason?{details:{reason:ownReason}}:{})}).error;
   if(code==='RESOURCE_NOT_FOUND')return errorEnvelope('RESOURCE_NOT_FOUND','The requested resource was not found',requestId,{retryable:false,...(ownReason?{details:{reason:ownReason}}:{})}).error;

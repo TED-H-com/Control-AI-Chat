@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { canonicalJson, resolvePolicy } from './resolve-policy.js';
+import type { ResolvedRule } from './types.js';
 
 test('canonicalJson standardizes JSON correctly', () => {
     assert.equal(canonicalJson({ b: 2, a: 1 }), '{"a":1,"b":2}');
@@ -45,4 +46,12 @@ test('resolvePolicy throws on tenant mismatch', () => {
             subject: { tenantId: 'tenant2' } as any
         });
     }, /gate_tenant_mismatch/);
+});
+
+test('model rules include additional models without changing the empty-list result',()=>{
+  const rule:ResolvedRule={id:'rule-b',revision:1,name:'B',detectorKind:'keyword',action:'block',passMask:'preflight',priority:1,scopeType:'model',scopeId:'B',config:{terms:['restricted']},failureMode:'closed',sourceOrder:0};
+  const input={tenantId:'tenant',modelId:'A',subject:{tenantId:'tenant',userId:'user',groupIds:[],roles:['member'] as const},pass:'preflight' as const,policyVersion:1,rules:[rule],nowMs:0,snapshotId:'snapshot'};
+  const base=resolvePolicy(input),empty=resolvePolicy({...input,additionalModelIds:[]}),additional=resolvePolicy({...input,additionalModelIds:['B']});
+  assert.deepEqual(base.rules,[]);assert.deepEqual(empty,base);
+  assert.deepEqual(additional.rules,[rule]);assert.notEqual(additional.fingerprint,base.fingerprint);
 });

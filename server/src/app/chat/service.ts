@@ -377,7 +377,7 @@ export class GovernedChatApplication implements ChatPipelineServices {
     const state=this.#state(tenant,input.runId); if(input.direction==='file') throw new Error('File gate is not a chat operation');
     if(input.direction==='outbound')return this.#gatePreflight(tenant,state,input.text,signal);
     const parts=[{id:state.assistant.id,source:'provider_response' as const,text:input.text,mimeType:'text/plain',fileId:null,provenance:{}}];
-    const policy=this.#policy(tenant,this.#groups(tenant),state.model.id,'postflight','inbound');
+    const policy=this.#policy(tenant,this.#groups(tenant),state.model.id,'postflight','inbound',this.#policyModels(state));
     const verdict=await this.#gate.evaluate(this.#gateContext(tenant,state,'postflight',signal,parts,policy,'inbound'));
     if(!state.postflight||GATE_ACTION_RANK[verdict.action]>=GATE_ACTION_RANK[state.postflight.action])state.postflight=verdict;
     const durableApprovalId=this.#audit.transact(tx=>this.#persistDecision(tenant,state,verdict,input.text,'inbound',tx.append));
@@ -393,6 +393,7 @@ export class GovernedChatApplication implements ChatPipelineServices {
     const groups=tenant.db.all(this.#q.groups,tenant.principal.userId).map(x=>x.group_id);
     const providerText=state.providerMessages.flatMap(message=>message.content).filter(part=>part.type==='text').map(part=>part.text).join('\n');
     const now=this.#now();
+    const policyModelsBefore=[state.model.id,...this.#policyModels(state)].sort();
     if(state.routeSelection){
       const candidates=loadRoutingCandidates(this.#database,{tenantId:tenant.principal.tenantId,userId:tenant.principal.userId,inputTokens:this.#estimateInput(providerText),outputTokens:state.routingEstimatedOutputTokens,now});
       const routingIntent={mode:state.routingMode as 'auto'|'single',effort:state.routingEffort,
@@ -409,6 +410,8 @@ export class GovernedChatApplication implements ChatPipelineServices {
       if(model.id!==state.model.id){state.model=model;Object.assign(state.assistant,{modelId:model.id,provider:model.provider_key});if(tenant.db.run(this.#q.updateAssistantRoute,model.id,model.provider_key,state.assistant.id).changes!==1)throw new Error('Multi-model route could not update the pending assistant');state.providerMessages=assembleAuthorizedProviderContext({messages:state.providerMessages,attachments:[],modelContextWindow:model.context_window,configuredMaxOutput:model.max_output_tokens}).messages;}
       state.multiPlan=plan;
     }
+    const policyModelsAfter=[state.model.id,...this.#policyModels(state)].sort();
+    if(JSON.stringify(policyModelsBefore)!==JSON.stringify(policyModelsAfter)&&this.#preflightPolicies(tenant,state).fingerprint!==state.preflight.policyFingerprint)throw Object.assign(new Error('Policy changed'),{code:'POLICY_VERSION_CHANGED'});
     const multi=state.multiPlan!==null;
     const estimatedInputTokens=multi?this.#estimateInput(providerText)*5+10*512:this.#estimateInput(providerText);
     const requestedMaxOutputTokens=multi?Math.min(state.model.max_output_tokens,5*512):state.model.max_output_tokens;
@@ -723,10 +726,11 @@ export class GovernedChatApplication implements ChatPipelineServices {
       projectId:state.projectId,providerId:state.model.provider_key,modelId:state.model.id,locale:'en',nowMs:this.#now(),parts,
       policySnapshot,abortSignal:signal,confirmedWarningToken,metadata:{runId:state.run.id,direction}};
   }
-  #policy(tenant:TenantContext,groups:readonly string[],modelId:string,pass:'preflight'|'postflight',direction:'outbound'|'inbound'|'file'):ResolvedPolicySnapshot{const tenantId=tenant.principal.tenantId,rows=tenant.db.all(this.#q.policies,tenant.principal.userId,JSON.stringify(groups),modelId,direction);const rules=rows.map((x,i)=>({id:x.id,revision:x.revision,name:x.name,detectorKind:x.detector_kind,action:x.action,passMask:x.pass_mask,priority:x.priority,scopeType:x.scope_type,scopeId:x.scope_id,config:JSON.parse(x.config_json) as Record<string,unknown>,failureMode:x.failure_mode,sourceOrder:i}));return resolvePolicy({tenantId,modelId,subject:{tenantId,userId:tenant.principal.userId,groupIds:groups,roles:tenant.principal.roles},pass,policyVersion:1,rules,nowMs:this.#now()});}
+  #policy(tenant:TenantContext,groups:readonly string[],modelId:string,pass:'preflight'|'postflight',direction:'outbound'|'inbound'|'file',additionalModelIds:readonly string[]=[]):ResolvedPolicySnapshot{const tenantId=tenant.principal.tenantId,seen=new Set<string>(),rows=[modelId,...additionalModelIds].flatMap(id=>tenant.db.all(this.#q.policies,tenant.principal.userId,JSON.stringify(groups),id,direction)).filter(row=>{if(seen.has(row.id))return false;seen.add(row.id);return true;});const rules=rows.map((x,i)=>({id:x.id,revision:x.revision,name:x.name,detectorKind:x.detector_kind,action:x.action,passMask:x.pass_mask,priority:x.priority,scopeType:x.scope_type,scopeId:x.scope_id,config:JSON.parse(x.config_json) as Record<string,unknown>,failureMode:x.failure_mode,sourceOrder:i}));return resolvePolicy({tenantId,modelId,additionalModelIds,subject:{tenantId,userId:tenant.principal.userId,groupIds:groups,roles:tenant.principal.roles},pass,policyVersion:1,rules,nowMs:this.#now()});}
+  #policyModels(state:RunState):readonly string[]{return [...new Set(state.multiPlan?.executions.map(execution=>execution.candidate.tenantModelId).filter(id=>id!==state.model.id)??[])].sort();}
   #preflightPolicies(tenant:TenantContext,state:RunState):{outbound:ResolvedPolicySnapshot;file:ResolvedPolicySnapshot;fingerprint:string}{
-    // Follow-up: auto/multi-model routing may change the dispatched model after this outbound snapshot.
-    const groups=this.#groups(tenant),outbound=this.#policy(tenant,groups,state.model.id,'preflight','outbound'),file=this.#policy(tenant,groups,state.model.id,'preflight','file');
+    // A run is checked under the rules of every model it is sent to; the strictest outcome applies.
+    const groups=this.#groups(tenant),additionalModelIds=this.#policyModels(state),outbound=this.#policy(tenant,groups,state.model.id,'preflight','outbound',additionalModelIds),file=this.#policy(tenant,groups,state.model.id,'preflight','file',additionalModelIds);
     const fingerprint=createHash('sha256').update(`${outbound.fingerprint}\n${file.fingerprint}`).digest('hex');
     return {outbound:{...outbound,fingerprint},file:{...file,fingerprint},fingerprint};
   }

@@ -17,6 +17,7 @@ test('governedPipelineError preserves every governed refusal cause for both chat
     [thrown('provider_not_allowed'),'single',false,'PROVIDER_UNAVAILABLE','chat_provider_not_allowed',false],
     [thrown('PROVIDER_UNAVAILABLE'),'single',false,'PROVIDER_UNAVAILABLE',undefined,true],
     [thrown('PRECONDITION_FAILED'),'single',false,'PRECONDITION_FAILED','chat_policy_changed',true],
+    [thrown('POLICY_VERSION_CHANGED'),'multi_model',false,'PRECONDITION_FAILED','chat_policy_changed',true],
     [thrown('GATE_BLOCKED'),'single',false,'GATE_BLOCKED',undefined,false],
     [thrown('VALIDATION_FAILED','chat_context_too_large'),'single',false,'VALIDATION_FAILED','chat_context_too_large',false],
     [thrown('RESOURCE_NOT_FOUND','chat_attachment_unavailable'),'single',false,'RESOURCE_NOT_FOUND','chat_attachment_unavailable',false],
