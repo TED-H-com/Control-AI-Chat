@@ -100,7 +100,6 @@ export const routeDefinitions:readonly RouteDefinition[] = [
   {method:'POST',path:'/admin/violations/:id/due',operation:'admin.violationDue',access:T,permission:'approval:decide',body:j,ifMatch:true,idempotency:true},
   {method:'POST',path:'/admin/violations/:id/notes',operation:'admin.violationNote',access:T,permission:'approval:decide',body:j,ifMatch:true,idempotency:true},
   ...adminDefinitions(),
-  {method:'GET',path:'/jobs/:id',operation:'jobs.get',access:T,body:n},
   {method:'GET',path:'/health/live',operation:'health.live',access:P,body:n},
   {method:'GET',path:'/health/ready',operation:'health.ready',access:'internal',body:n},
 ];
