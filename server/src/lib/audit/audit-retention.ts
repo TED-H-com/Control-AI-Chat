@@ -141,6 +141,10 @@ export function purgeExpiredTranscripts(
 
 interface CheckpointRow {busy:number;log:number;checkpointed:number}
 
+export class WalCheckpointBusyError extends Error {
+  constructor(){super('SQLite WAL checkpoint could not obtain an exclusive reader gap');this.name='WalCheckpointBusyError';}
+}
+
 function enableSecureDelete(database:Database.Database):void {
   database.pragma('secure_delete = ON');
   if(database.pragma('secure_delete',{simple:true})!==1)throw new Error('SQLite secure_delete could not be enabled');
@@ -148,7 +152,7 @@ function enableSecureDelete(database:Database.Database):void {
 
 function truncateWal(database:Database.Database):void {
   const row=(database.pragma('wal_checkpoint(TRUNCATE)') as CheckpointRow[])[0];
-  if(!row||row.busy!==0)throw new Error('SQLite WAL checkpoint could not obtain an exclusive reader gap');
+  if(!row||row.busy!==0)throw new WalCheckpointBusyError();
 }
 
 /**

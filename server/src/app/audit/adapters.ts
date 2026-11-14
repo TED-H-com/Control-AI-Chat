@@ -7,7 +7,7 @@ import type { ApprovalReleaseStatus, ApprovalStatus } from '../../shared/api.js'
 import type { TenantId } from '../../shared/types.js';
 import type { TenantDb } from '../../lib/db.js';
 import { decodeCursor, encodeCursor } from '../../lib/http/pagination.js';
-import { AUDIT_EXPORT_FIELDS, AuditSearch, actorIpHmac, auditHashObject, eventHash, scrubSecrets, streamAuditExport, validateAuditExportFields, verifyAuditChain, ViolationChangedError, type AuditExportField, type AuditExportFormat, type AuditSearchQuery, type AuditSearchRow, type AuditService, type JsonValue } from '../../lib/audit/index.js';
+import { AUDIT_EXPORT_FIELDS, AuditChainUnavailableError, AuditSearch, actorIpHmac, auditHashObject, eventHash, scrubSecrets, streamAuditExport, validateAuditExportFields, verifyAuditChain, ViolationChangedError, type AuditExportField, type AuditExportFormat, type AuditSearchQuery, type AuditSearchRow, type AuditService, type JsonValue } from '../../lib/audit/index.js';
 import { terminalApprovalRun } from '../chat/approval-run-lifecycle.js';
 import { createDurableMutationIdempotency, MutationIdempotencyError } from '../idempotency/mutation.js';
 import { localToUtc } from '../../lib/governance/windows.js';
@@ -138,7 +138,15 @@ export function createAuditRouteAdapter(deps:AuditAdapterDependencies):AuditRout
     try {
       if(operation==='audit.events') { const started=now(),found=search.search(tenantId,role(tenant.principal.roles),query(context,request.query),tenant.db),body={items:events(context,found.rows.map(row=>row.id)),nextCursor:found.nextCursor,hasMore:found.hasMore};append(deps,request,'admin.audit_searched','tenant',tenantId,'success',{filterNames:filterNames(request.query),resultCount:body.items.length,elapsedMs:now()-started},now());return {body}; }
       if(operation==='audit.event') { const id=required(request.params.id),eventRow=context.db.get(context.statements.events,{ids:JSON.stringify([id])});if(!eventRow)return error(request,404,'NOT_FOUND','Audit event not found');const body=eventDetail(context,eventRow);if(body.detail.cleansedPrompt!==null)append(deps,request,'admin.transcript_viewed','tenant',tenantId,'success',{eventId:id},now());return {body}; }
-      if(operation==='audit.integrity') {const epoch=optionalInt(request.query.epoch),mode=epoch===undefined?'full':'epoch';append(deps,request,'admin.chain_verification_started','tenant',tenantId,'pending',{mode,epoch:epoch??null,fromSequence:null},now());const started=now(),body=verifyAuditChain(deps.database,tenantId,epoch);append(deps,request,'admin.chain_verification_completed','tenant',tenantId,body.valid?'success':'failure',{mode,checkedRows:body.checkedRows,elapsedMs:now()-started,breakAtSequence:body.breakAtSequence},now());return {body};}
+      if(operation==='audit.integrity') {
+        const epoch=optionalInt(request.query.epoch),mode=epoch===undefined?'full':'epoch';let recorded=true;
+        try{append(deps,request,'admin.chain_verification_started','tenant',tenantId,'pending',{mode,epoch:epoch??null,fromSequence:null},now());}
+        catch(error){if(!(error instanceof AuditChainUnavailableError))throw error;recorded=false;(deps.logger??console).error('Audit chain verification could not be recorded because the chain is unavailable');}
+        const started=now(),body=verifyAuditChain(deps.database,tenantId,epoch);
+        if(recorded)try{append(deps,request,'admin.chain_verification_completed','tenant',tenantId,body.valid?'success':'failure',{mode,checkedRows:body.checkedRows,elapsedMs:now()-started,breakAtSequence:body.breakAtSequence},now());}
+        catch(error){if(!(error instanceof AuditChainUnavailableError))throw error;(deps.logger??console).error('Audit chain verification could not be recorded because the chain is unavailable');}
+        return {body};
+      }
       if(operation==='admin.violations') { expireApprovals(deps,request,expiry,now()); return {body:listViolations(context,request.query,releaseAvailable)}; }
       if(operation==='gate.approvals') { expireApprovals(deps,request,expiry,now()); return {body:listApprovals(context,request.query,releaseAvailable)}; }
       if(operation==='gate.approval') { const id=required(request.params.id);expireApprovals(deps,request,expiry,now(),id);const [row]=listApprovals(context,{id,limit:'1'},releaseAvailable).items; return row?{body:row}:error(request,404,'NOT_FOUND','Approval not found'); }

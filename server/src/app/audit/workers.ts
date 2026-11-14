@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto';
+import { readdir, stat, unlink } from 'node:fs/promises';
+import { dirname, join, resolve } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { TenantId } from '../../shared/types.js';
-import { purgeExpiredApprovalPayloads, purgeExpiredConversations, purgeExpiredIdempotencyRecords, purgeExpiredProjectFiles, purgeExpiredTranscripts, retentionCutoff, verifyAuditChain, type AuditService, type AuditTransaction, type TenantRetentionPolicy } from '../../lib/audit/index.js';
+import { purgeExpiredApprovalPayloads, purgeExpiredConversations, purgeExpiredIdempotencyRecords, purgeExpiredProjectFiles, purgeExpiredTranscripts, retentionCutoff, verifyAuditChain, WalCheckpointBusyError, type AuditService, type AuditTransaction, type TenantRetentionPolicy } from '../../lib/audit/index.js';
 import type { FileBlobStore } from '../files/storage.js';
 import { GovernanceLedger } from '../../lib/governance/ledger.js';
 import { recoverInterruptedMultiModelWorkflows, type MultiModelRecoveryResult } from '../chat/multi-model-recovery.js';
@@ -10,6 +12,7 @@ import { recoverInterruptedSingleModelRuns, type SingleModelRecoveryResult } fro
 export interface WorkerLogger { error(message:string,error?:unknown):void; info?(message:string):void }
 export interface AuditWorkerDependencies {
   database:Database.Database;
+  exportDirectory?:string;
   audit:Pick<AuditService,'append'|'transact'>;
   logger?:WorkerLogger;
   now?:()=>number;
@@ -79,9 +82,45 @@ export async function runRetentionMaintenance(
     // marked the chain broken while it yielded, so re-check before every remaining destructive job.
     if(!chainHealthy(tenantId)){logger.error(`Retention paused for tenant ${tenantId} because its audit chain became unavailable`);return}
     purgeExpiredTranscripts(deps.database,tenantId,at,100);
-    purgeExpiredApprovalPayloads(deps.database,tenantId,at,policy.approvalPayloadDays,100);
+    try{purgeExpiredApprovalPayloads(deps.database,tenantId,at,policy.approvalPayloadDays,100);}
+    catch(error){if(!(error instanceof WalCheckpointBusyError))throw error;logger.error(`Retention could not finish destroying expired approval keys for tenant ${tenantId}; it will be retried`);}
     purgeExpiredIdempotencyRecords(deps.database,tenantId,at,500);
   },stopped);
+}
+
+export async function runAuditExportMaintenance(
+  deps:{database:Database.Database;exportDirectory:string;logger?:WorkerLogger;now?:()=>number},
+  stopped:()=>boolean=()=>false,
+):Promise<void> {
+  const at=(deps.now??Date.now)(),staleBefore=at-60*60_000,logger=deps.logger??console,directory=resolve(deps.exportDirectory);
+  const due=deps.database.prepare<[TenantId,number],{id:string;storage_path:string|null}>('SELECT id,storage_path FROM audit_exports WHERE tenant_id=? AND expires_at_ms<=? ORDER BY expires_at_ms,id LIMIT 100');
+  const remove=deps.database.prepare<[TenantId,string,number]>('DELETE FROM audit_exports WHERE tenant_id=? AND id=? AND expires_at_ms<=?');
+  const interrupt=deps.database.prepare<[TenantId,number,number]>("WITH tenant_scope(id) AS (VALUES (?)) UPDATE audit_exports SET status='failed',error_code='EXPORT_INTERRUPTED',completed_at_ms=? WHERE tenant_id=(SELECT id FROM tenant_scope) AND status='pending' AND created_at_ms<=?");
+  await forEachMaintenanceTenant(deps.database,25,async tenantId=>{
+    for(const row of due.all(tenantId,at)){
+      if(row.storage_path!==null){
+        if(dirname(resolve(row.storage_path))===directory){
+          try{await unlink(row.storage_path);}catch(error){
+            if((error as NodeJS.ErrnoException).code!=='ENOENT'){logger.error(`Audit export ${row.id} could not be removed; it will be retried`);continue;}
+          }
+        }else logger.error(`Audit export ${row.id} has a file outside the export directory; the file was left in place`);
+      }
+      remove.run(tenantId,row.id,at);
+    }
+    interrupt.run(tenantId,at,staleBefore);
+  },stopped);
+  if(stopped())return;
+  let entries:string[];
+  try{entries=await readdir(directory);}catch(error){
+    if((error as NodeJS.ErrnoException).code!=='ENOENT')logger.error('Audit export temporary files could not be listed; they will be retried');
+    return;
+  }
+  for(const entry of entries){
+    if(!/^\.[0-9a-f-]{36}\.tmp$/.test(entry))continue;
+    const path=join(directory,entry);
+    try{if((await stat(path)).mtimeMs<staleBefore)await unlink(path);}
+    catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')logger.error(`Audit export temporary file ${entry} could not be removed; it will be retried`);}
+  }
 }
 
 interface VerificationHead { chain_epoch:number; last_sequence:number; genesis_hash:string; status:string; last_verified_sequence:number; last_verified_hash:string|null }
@@ -194,6 +233,7 @@ export function startAuditWorkers(deps:AuditWorkerDependencies):AuditWorkers {
     {name:'multi-model-recovery',initialMs:10_000,intervalMs:5*60_000,run:multiModelRecovery},
     {name:'single-model-recovery',initialMs:12_000,intervalMs:5*60_000,run:singleModelRecovery},
   ];
+  if(deps.exportDirectory!==undefined)specs.push({name:'audit-exports',initialMs:90_000,intervalMs:60*60_000,run:()=>runAuditExportMaintenance({database:deps.database,exportDirectory:deps.exportDirectory!,logger,now},()=>stopped)});
   if(deps.retentionEnforcementEnabled===false)logger.info?.('New conversation and file retention purges are disabled; the retention worker will only reconcile an interrupted prepared file deletion until RETENTION_ENFORCEMENT_ENABLED=true');
   for(const spec of specs)schedule(spec,spec.initialMs);
   function schedule(spec:TimerSpec,delayMs:number):void {const timer=setTimeout(()=>{timers.delete(timer);tick(spec);},delayMs);timer.unref();timers.add(timer);}
