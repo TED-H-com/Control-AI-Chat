@@ -3,9 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import test from 'node:test';
+import test, { mock } from 'node:test';
+import { Worker } from 'node:worker_threads';
 import Database from 'better-sqlite3';
-import { createFilesAdapter } from './index.js';
+import { createFilesAdapter, type FileBlobStore } from './index.js';
+import { assembleProjectContext } from '../repositories/context.js';
 import { createAuditService } from '../../lib/audit/index.js';
 import { forTenant } from '../../lib/db.js';
 import { runMigrations } from '../../lib/migrations/index.js';
@@ -51,7 +53,7 @@ function fixture() {
     adapter.execute('files.upload',request(index,{body:{file:new File([bytes],name,{type}),projectId}}));
   const events=(action:string)=>database.prepare(`SELECT action,outcome,target_id,metadata_json FROM audit_events WHERE action=? ORDER BY sequence`).all(action) as {action:string;outcome:string;target_id:string|null;metadata_json:string}[];
   const close=()=>{database.close();rmSync(root,{recursive:true,force:true})};
-  return {database,adapter,request,upload,events,run,root,tenants,users,projects,close};
+  return {database,adapter,audit,request,upload,events,run,root,tenants,users,projects,close};
 }
 
 const ok=(result:RouteResult,expected?:number):Record<string,unknown> => {
@@ -262,4 +264,109 @@ test('file audit metadata contains neither content nor an unkeyed content digest
   assert.ok(metadata.length>=5);
   for(const value of metadata){assert.doesNotMatch(value,new RegExp(digest));assert.doesNotMatch(value,/vendor evidence|annual access review/);assert.doesNotMatch(value,new RegExp(Buffer.from(TEXT).toString('base64')));}
   f.close();
+});
+
+test('an upload waits for deletion of the same blob and refreshes the revived row clock',async()=>{
+  const f=fixture(),bytesByKey=new Map<string,Uint8Array>();
+  let releaseRemove!:()=>void,announceRemove!:()=>void,announceExtraction!:()=>void,at=AT;
+  const gate=new Promise<void>(resolve=>{releaseRemove=resolve}),removing=new Promise<void>(resolve=>{announceRemove=resolve});
+  const extracted=new Promise<void>(resolve=>{announceExtraction=resolve});
+  const memory:FileBlobStore={
+    async put(key,bytes){bytesByKey.set(key,bytes.slice())},
+    async read(key){return bytesByKey.get(key)??null},
+    async remove(key){bytesByKey.delete(key)},
+  };
+  const storage:FileBlobStore={...memory,async remove(key){announceRemove();await gate;await memory.remove(key)}};
+  const adapter=createFilesAdapter({database:f.database,audit:f.audit,storageRoot:f.root,storage,now:()=>at});
+  const upload=()=>adapter.execute('files.upload',f.request(0,{body:{file:new File([TEXT],'evidence.txt',{type:'text/plain'}),projectId:f.projects[0]}}));
+  try{
+    const first=ok(await upload(),202) as unknown as FileDetail;
+    at=AT+50;
+    assert.equal((ok(await upload(),202) as unknown as FileDetail).version,AT,'a live deduplication keeps its original clock');
+    at=AT+100;
+    const deletion=adapter.execute('files.delete',f.request(0,{params:{id:first.id},headers:{'If-Match':'*'}}));
+    await removing;
+    at=AT+1000;
+    // Observe the real extraction worker so the queued upload reaches the lock before removal resumes.
+    const emit=Worker.prototype.emit;
+    const observer=mock.method(Worker.prototype,'emit',function(this:Worker,event:string|symbol,...args:unknown[]):boolean{
+      const result=Reflect.apply(emit,this,[event,...args]) as boolean;
+      if(event==='message')announceExtraction();
+      return result;
+    });
+    const revival=upload();
+    let deleted:RouteResult,reuploaded:RouteResult;
+    try{
+      await extracted;
+      await new Promise<void>(resolve=>setImmediate(resolve));
+      releaseRemove();
+      [deleted,reuploaded]=await Promise.all([deletion,revival]);
+    }finally{observer.mock.restore()}
+    assert.equal(deleted.status,204);
+    assert.equal(ok(reuploaded,202).id,first.id);
+    const content=await adapter.execute('files.content',f.request(0,{params:{id:first.id}}));
+    assert.equal(content.status??200,200,'the revived row must still have its blob');
+    assert.deepEqual(content.body,TEXT);
+    assert.equal(f.database.prepare('SELECT created_at FROM project_files WHERE tenant_id=? AND id=?').pluck().get(f.tenants[0],first.id),AT+1000);
+  }finally{releaseRemove();f.close()}
+});
+
+test('a failed blob removal releases the lock for a later upload',async()=>{
+  const f=fixture(),bytesByKey=new Map<string,Uint8Array>();
+  const storage:FileBlobStore={
+    async put(key,bytes){bytesByKey.set(key,bytes.slice())},
+    async read(key){return bytesByKey.get(key)??null},
+    async remove(){throw new Error('synthetic unlink failure')},
+  };
+  const adapter=createFilesAdapter({database:f.database,audit:f.audit,storageRoot:f.root,storage,now:()=>AT});
+  const upload=()=>adapter.execute('files.upload',f.request(0,{body:{file:new File([TEXT],'evidence.txt',{type:'text/plain'}),projectId:f.projects[0]}}));
+  try{
+    const first=ok(await upload(),202) as unknown as FileDetail;
+    await assert.rejects(adapter.execute('files.delete',f.request(0,{params:{id:first.id},headers:{'If-Match':'*'}})),/synthetic unlink failure/);
+    assert.equal(ok(await upload(),202).id,first.id);
+    assert.deepEqual((await adapter.execute('files.content',f.request(0,{params:{id:first.id}}))).body,TEXT);
+  }finally{f.close()}
+});
+
+test('a deletion does not block an upload with a different blob key',async()=>{
+  const f=fixture(),bytesByKey=new Map<string,Uint8Array>();
+  let releaseRemove!:()=>void,announceRemove!:()=>void;
+  const gate=new Promise<void>(resolve=>{releaseRemove=resolve}),removing=new Promise<void>(resolve=>{announceRemove=resolve});
+  const storage:FileBlobStore={
+    async put(key,bytes){bytesByKey.set(key,bytes.slice())},
+    async read(key){return bytesByKey.get(key)??null},
+    async remove(key){announceRemove();await gate;bytesByKey.delete(key)},
+  };
+  const adapter=createFilesAdapter({database:f.database,audit:f.audit,storageRoot:f.root,storage,now:()=>AT});
+  const upload=(projectId:string)=>adapter.execute('files.upload',f.request(0,{body:{file:new File([TEXT],'evidence.txt',{type:'text/plain'}),projectId}}));
+  try{
+    const other=randomUUID();
+    f.run("INSERT INTO projects(tenant_id,id,owner_user_id,name,created_at,updated_at) VALUES(?,?,?,'Second',?,?)",f.tenants[0],other,f.users[0],AT,AT);
+    const first=ok(await upload(f.projects[0]),202) as unknown as FileDetail;
+    const deletion=adapter.execute('files.delete',f.request(0,{params:{id:first.id},headers:{'If-Match':'*'}}));
+    await removing;
+    const elsewhere=ok(await upload(other),202) as unknown as FileDetail;
+    assert.notEqual(elsewhere.id,first.id);
+    releaseRemove();
+    assert.equal((await deletion).status,204);
+    assert.deepEqual((await adapter.execute('files.content',f.request(0,{params:{id:elsewhere.id}}))).body,TEXT);
+  }finally{releaseRemove();f.close()}
+});
+
+test('delete clears extracted text and revival restores text and content',async()=>{
+  const f=fixture();
+  try{
+    const first=ok(await f.upload(0,TEXT,'evidence.txt','text/plain'),202) as unknown as FileDetail;
+    assert.equal(f.database.prepare('SELECT extracted_text FROM project_files WHERE tenant_id=? AND id=?').pluck().get(f.tenants[0],first.id),new TextDecoder().decode(TEXT));
+    assert.equal((await f.adapter.execute('files.delete',f.request(0,{params:{id:first.id},headers:{'If-Match':'*'}}))).status,204);
+    assert.equal(f.database.prepare('SELECT extracted_text FROM project_files WHERE tenant_id=? AND id=?').pluck().get(f.tenants[0],first.id),null);
+    const revived=ok(await f.upload(0,TEXT,'evidence.txt','text/plain'),202) as unknown as FileDetail;
+    assert.equal(revived.id,first.id);
+    assert.equal(f.database.prepare('SELECT extracted_text FROM project_files WHERE tenant_id=? AND id=?').pluck().get(f.tenants[0],first.id),new TextDecoder().decode(TEXT));
+    assert.equal(ok(await f.adapter.execute('files.extracted',f.request(0,{params:{id:first.id}})),undefined).text,new TextDecoder().decode(TEXT));
+    assert.deepEqual((await f.adapter.execute('files.content',f.request(0,{params:{id:first.id}}))).body,TEXT);
+    const row=f.database.prepare('SELECT id,extracted_text,created_at FROM project_files WHERE tenant_id=? AND id=?').get(f.tenants[0],first.id) as {id:string;extracted_text:string;created_at:number};
+    const context=assembleProjectContext({modelContextWindow:1000,configuredMaxOutput:100,system:[],projectFiles:[{id:row.id,text:row.extracted_text,relevance:1,createdAt:row.created_at}],userMessage:'Review'});
+    assert.ok(context.parts.some(part=>part.source==='project_file'&&part.text===new TextDecoder().decode(TEXT)));
+  }finally{f.close()}
 });

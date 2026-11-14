@@ -33,6 +33,17 @@ const OPERATIONS=new Set(['files.upload','files.get','files.content','files.extr
 const MAX_BYTES=DEFAULT_EXTRACTION_LIMITS.maxFileBytes;
 const EXTRACTORS=createDefaultExtractorRegistry();
 const GENERIC_MIME=new Set(['','application/octet-stream','binary/octet-stream']);
+const blobLocks=new Map<string,Promise<void>>();
+
+async function withBlobLock<T>(key:string,action:()=>Promise<T>):Promise<T> {
+  const previous=blobLocks.get(key);
+  let release!:()=>void;
+  const done=new Promise<void>(resolve=>{release=resolve});
+  blobLocks.set(key,done);
+  if(previous)await previous;
+  try{return await action()}
+  finally{release();if(blobLocks.get(key)===done)blobLocks.delete(key)}
+}
 
 /**
  * `extraction_status` records what the extractor did; `FileStatus` is what the composer renders.
@@ -87,7 +98,7 @@ function prepare(database:Database.Database):FileStatements {
       SELECT q.tenant_id,q.q_id,q.q_project,q.q_user,q.q_name,q.q_key,q.q_mime,q.q_size,q.q_sha,q.q_status,q.q_text,q.q_error,q.q_at FROM q
       WHERE EXISTS(SELECT 1 FROM projects p WHERE p.tenant_id=q.tenant_id AND p.id=q.q_project AND p.deleted_at IS NULL)
       ON CONFLICT(project_id,sha256) DO UPDATE SET deleted_at=NULL,content_purged_at=NULL,storage_key=excluded.storage_key,
-        extraction_status=excluded.extraction_status,extracted_text=excluded.extracted_text,extraction_error=excluded.extraction_error
+        extraction_status=excluded.extraction_status,extracted_text=excluded.extracted_text,extraction_error=excluded.extraction_error,created_at=excluded.created_at
       WHERE project_files.deleted_at IS NOT NULL OR project_files.content_purged_at IS NOT NULL
       RETURNING *`),
     // Deleting a file destroys its bytes and keeps its row: the row is what the audit trail, the
@@ -95,7 +106,7 @@ function prepare(database:Database.Database):FileStatements {
     // would not be a delete in a product sold on governance. content_purged_at is the flag every
     // byte-counting query already tests, so it has to move with deleted_at.
     softDelete:p<Statement>(`WITH q(tenant_id,q_at,q_id) AS (VALUES(?,?,?))
-      UPDATE project_files SET deleted_at=q.q_at,content_purged_at=COALESCE(project_files.content_purged_at,q.q_at)
+      UPDATE project_files SET deleted_at=q.q_at,content_purged_at=COALESCE(project_files.content_purged_at,q.q_at),extracted_text=NULL
       FROM q WHERE project_files.tenant_id=q.tenant_id AND project_files.id=q.q_id AND project_files.deleted_at IS NULL`),
   };
 }
@@ -228,22 +239,23 @@ export function createFilesAdapter(deps:FilesAdapterDependencies):FilesAdapter {
     // storage_key is globally UNIQUE, so the project has to be in the key — two projects holding the
     // same bytes are two rows.
     const storageKey=`${principal.tenantId}/${projectId}/${sha256}`;
-    await blobs.put(storageKey,bytes);
-
-    const at=now();
-    const row=deps.audit.transact(tx=>{
-      const inserted=tenant.get(statements.insert,randomUUID(),projectId,principal.userId,name,storageKey,mimeType,bytes.byteLength,sha256,extraction.status,extraction.text,extraction.error,at);
-      const current=inserted??tenant.get(statements.bySha,projectId,sha256);
-      if(!current)throw new Error('project_files insert reported no row for a project that exists');
-      record(tx,request,'chat.file_uploaded','success',current.id,projectId,{fileName:name,byteSize:bytes.byteLength,mimeType,extractionStatus:current.extraction_status,deduplicated:inserted===undefined});
-      record(tx,request,'chat.project_file_added','success',current.id,projectId,{projectId,fileId:current.id});
-      record(tx,request,'chat.file_extracted',extraction.status==='ready'?'success':'failure',current.id,projectId,
-        {access:'pipeline',mimeType,characters:extraction.text?.length??0,status:extraction.status,errorCode:extraction.error,warnings:[...extraction.warnings]});
-      return current;
+    return withBlobLock(storageKey,async()=>{
+      await blobs.put(storageKey,bytes);
+      const at=now();
+      const row=deps.audit.transact(tx=>{
+        const inserted=tenant.get(statements.insert,randomUUID(),projectId,principal.userId,name,storageKey,mimeType,bytes.byteLength,sha256,extraction.status,extraction.text,extraction.error,at);
+        const current=inserted??tenant.get(statements.bySha,projectId,sha256);
+        if(!current)throw new Error('project_files insert reported no row for a project that exists');
+        record(tx,request,'chat.file_uploaded','success',current.id,projectId,{fileName:name,byteSize:bytes.byteLength,mimeType,extractionStatus:current.extraction_status,deduplicated:inserted===undefined});
+        record(tx,request,'chat.project_file_added','success',current.id,projectId,{projectId,fileId:current.id});
+        record(tx,request,'chat.file_extracted',extraction.status==='ready'?'success':'failure',current.id,projectId,
+          {access:'pipeline',mimeType,characters:extraction.text?.length??0,status:extraction.status,errorCode:extraction.error,warnings:[...extraction.warnings]});
+        return current;
+      });
+      // Extraction is settled, but file-direction policy is evaluated only when the file is attached to
+      // a message. 202 therefore means accepted into the governed file lifecycle, not provider-cleared.
+      return {status:202,body:detail(row)};
     });
-    // Extraction is settled, but file-direction policy is evaluated only when the file is attached to
-    // a message. 202 therefore means accepted into the governed file lifecycle, not provider-cleared.
-    return {status:202,body:detail(row)};
   }
 
   async function content(request:RouteRequest):Promise<RouteResult> {
@@ -277,23 +289,28 @@ export function createFilesAdapter(deps:FilesAdapterDependencies):FilesAdapter {
   }
 
   async function remove(request:RouteRequest):Promise<RouteResult> {
-    const row=lookup(request.tenant!.db,request);
-    if(!row)return error(request,404,'RESOURCE_NOT_FOUND','File not found');
-    // A repeated DELETE is the same request arriving twice, not a new one: 204 with no second audit
-    // event, because a retry after a dropped response is not a second deletion.
-    if(row.deleted_at!==null)return {status:204};
-    const supplied=request.headers.get('If-Match')?.trim()??'';
-    if(supplied!=='*'&&supplied.replace(/^W\//,'').replaceAll('"','')!==String(row.created_at))
-      return error(request,412,'PRECONDITION_FAILED','The file was modified by another request');
-    const at=now();
-    deps.audit.transact(tx=>{
-      request.tenant!.db.run(statements.softDelete,at,row.id);
-      record(tx,request,'chat.file_deleted','success',row.id,row.project_id,{fileName:row.original_name,byteSize:row.byte_size});
+    const initial=lookup(request.tenant!.db,request);
+    if(!initial)return error(request,404,'RESOURCE_NOT_FOUND','File not found');
+    if(initial.deleted_at!==null)return {status:204};
+    return withBlobLock(initial.storage_key,async()=>{
+      const row=lookup(request.tenant!.db,request);
+      if(!row)return error(request,404,'RESOURCE_NOT_FOUND','File not found');
+      // A repeated DELETE is the same request arriving twice, not a new one: 204 with no second audit
+      // event, because a retry after a dropped response is not a second deletion.
+      if(row.deleted_at!==null)return {status:204};
+      const supplied=request.headers.get('If-Match')?.trim()??'';
+      if(supplied!=='*'&&supplied.replace(/^W\//,'').replaceAll('"','')!==String(row.created_at))
+        return error(request,412,'PRECONDITION_FAILED','The file was modified by another request');
+      const at=now();
+      deps.audit.transact(tx=>{
+        request.tenant!.db.run(statements.softDelete,at,row.id);
+        record(tx,request,'chat.file_deleted','success',row.id,row.project_id,{fileName:row.original_name,byteSize:row.byte_size});
+      });
+      // After the commit. Unlinking first would destroy the bytes behind a row that a rolled-back audit
+      // write leaves alive.
+      await blobs.remove(row.storage_key);
+      return {status:204};
     });
-    // After the commit. Unlinking first would destroy the bytes behind a row that a rolled-back audit
-    // write leaves alive.
-    await blobs.remove(row.storage_key);
-    return {status:204};
   }
 
   return {supports:operation=>OPERATIONS.has(operation),async execute(operation,request){

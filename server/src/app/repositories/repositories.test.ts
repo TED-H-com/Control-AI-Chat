@@ -196,3 +196,97 @@ test('default model preference requires an enabled model the caller may use',()=
   assert.equal(preferences.update(context,{defaultModelId:null}).defaultModelId,null);
   database.close();
 });
+
+function skillLinkFixture(){
+  const f=fixture(),conversations=new ConversationRepository(f.database,f.audit),skills=new SkillRepository(f.database,f.audit);
+  const colleague=member(f.database,f.context.principal.tenantId),otherTenant=crypto.randomUUID() as TenantId,at=f.context.now.getTime();
+  f.database.prepare("INSERT INTO tenants(id,slug,name,status,created_at,updated_at) VALUES(?,?,'Other tenant','active',?,?)").run(otherTenant,`other-${otherTenant.slice(0,8)}`,at,at);
+  const outsider=member(f.database,otherTenant),own=conversations.create(f.context),second=conversations.create(f.context),deleted=conversations.create(f.context);
+  const foreign=conversations.create(colleague),crossTenant=conversations.create(outsider);
+  conversations.delete(f.context,deleted.id);
+  const insert=f.database.prepare("INSERT INTO messages(tenant_id,id,conversation_id,author_user_id,role,status,sequence_no,created_at) VALUES(?,?,?,?,'user','complete',0,?)");
+  const message=(c:TenantContext,conversationId:string)=>{const id=crypto.randomUUID();insert.run(c.principal.tenantId,id,conversationId,c.principal.userId,at);return id};
+  const ownMessage=message(f.context,own.id),secondMessage=message(f.context,second.id),deletedMessage=message(f.context,deleted.id);
+  const foreignMessage=message(colleague,foreign.id),crossTenantMessage=message(outsider,crossTenant.id);
+  const skill=skills.create(f.context,{scope:'personal',name:'Brief',template:'Hello'});
+  return {...f,skills,skill,own,deleted,foreign,crossTenant,ownMessage,secondMessage,deletedMessage,foreignMessage,crossTenantMessage};
+}
+
+const skillNotFound=(error:unknown)=>error instanceof RepositoryError&&error.code==='NOT_FOUND'&&error.message==='Skill not found';
+const conversationNotFound=(error:unknown)=>error instanceof RepositoryError&&error.code==='NOT_FOUND'&&error.message==='Conversation not found';
+
+for(const [name,link] of [
+  ['another user conversation',(f:ReturnType<typeof skillLinkFixture>)=>({conversationId:f.foreign.id})],
+  ['another tenant conversation',(f:ReturnType<typeof skillLinkFixture>)=>({conversationId:f.crossTenant.id})],
+  ['missing conversation',()=>({conversationId:crypto.randomUUID()})],
+  ['deleted conversation',(f:ReturnType<typeof skillLinkFixture>)=>({conversationId:f.deleted.id})],
+  ['another user message',(f:ReturnType<typeof skillLinkFixture>)=>({messageId:f.foreignMessage})],
+  ['another tenant message',(f:ReturnType<typeof skillLinkFixture>)=>({messageId:f.crossTenantMessage})],
+  ['missing message',()=>({messageId:crypto.randomUUID()})],
+  ['message from another own conversation',(f:ReturnType<typeof skillLinkFixture>)=>({conversationId:f.own.id,messageId:f.secondMessage})],
+] as const){
+  test(`skill render refuses ${name} without writing an invocation`,()=>{
+    const f=skillLinkFixture();
+    try{
+      assert.throws(()=>f.skills.render(f.context,f.skill.id,{},link(f)),conversationNotFound);
+      assert.equal(f.database.prepare('SELECT count(*) FROM skill_invocations').pluck().get(),0);
+    }finally{f.database.close()}
+  });
+}
+
+test('skill render accepts owned links and message-only links to an owned deleted conversation',()=>{
+  const f=skillLinkFixture();
+  try{
+    for(const link of [{conversationId:f.own.id,messageId:f.ownMessage},{conversationId:f.own.id},{messageId:f.ownMessage},{messageId:f.deletedMessage}])
+      assert.equal(f.skills.render(f.context,f.skill.id,{},link).rendered,'Hello');
+    assert.equal(f.database.prepare('SELECT count(*) FROM skill_invocations').pluck().get(),4);
+  }finally{f.database.close()}
+});
+
+test('updating a deleted and purged conversation is refused; a purged one that was never deleted and an unpurged deletion still update',()=>{
+  const {database,context,audit}=fixture(),conversations=new ConversationRepository(database,audit);
+  try{
+    const purged=conversations.create(context,{title:'Purged'}),unpurged=conversations.create(context,{title:'Unpurged'}),activePurged=conversations.create(context,{title:'Active purged'});
+    conversations.delete(context,purged.id);conversations.delete(context,unpurged.id);
+    const purge=database.prepare('WITH q(tenant_id,at,id) AS (VALUES(?,?,?)) UPDATE conversations SET content_purged_at=q.at FROM q WHERE conversations.tenant_id=q.tenant_id AND conversations.id=q.id');
+    purge.run(context.principal.tenantId,context.now.getTime(),purged.id);
+    const row=()=>database.prepare('SELECT status,deleted_at,title FROM conversations WHERE tenant_id=? AND id=?').get(context.principal.tenantId,purged.id);
+    const before=row();
+    assert.throws(()=>conversations.update(context,purged.id,{title:'Revived'}),error=>error instanceof RepositoryError&&error.code==='CONFLICT'&&error.message==='Conversation content has been purged and cannot be restored');
+    assert.deepEqual(row(),before);
+    // Retention also purges conversations that were never deleted. Nothing is being restored there, so
+    // the owner can still archive, pin or rename the emptied conversation.
+    purge.run(context.principal.tenantId,context.now.getTime(),activePurged.id);
+    assert.equal(conversations.update(context,activePurged.id,{status:'archived'}).status,'archived');
+    const updated=conversations.update(context,unpurged.id,{title:'Renamed'});
+    assert.equal(updated.title,'Renamed');assert.equal(updated.status,'active');assert.equal(updated.deletedAt,null);
+  }finally{database.close()}
+});
+
+test('administrators can create, list, publish and unpublish organization skills',()=>{
+  const {database,context,audit}=fixture(),skills=new SkillRepository(database,audit);
+  const admin:TenantContext={...context,principal:{...context.principal,permissions:new Set([...context.principal.permissions,'admin:settings' as const])}};
+  try{
+    const skill=skills.create(admin,{scope:'organization',name:'Shared draft',template:'Hello',published:false});
+    assert.equal(skill.published,false);
+    assert.equal(database.prepare('SELECT enabled FROM skills WHERE tenant_id=? AND id=?').pluck().get(context.principal.tenantId,skill.id),0);
+    assert.ok(skills.list(admin).data.some(row=>row.id===skill.id));
+    assert.equal(skills.update(admin,skill.id,{published:true}).published,true);
+    assert.equal(skills.get(context,skill.id).published,true);
+    assert.equal(skills.update(admin,skill.id,{published:false}).published,false);
+    assert.equal(skills.list(context).data.some(row=>row.id===skill.id),false);
+    assert.throws(()=>skills.get(context,skill.id),skillNotFound);
+    for(const caller of [context,admin])assert.throws(()=>skills.render(caller,skill.id,{}),skillNotFound);
+  }finally{database.close()}
+});
+
+test('nobody can render an unpublished organization skill',()=>{
+  const {database,context,audit}=fixture(),skills=new SkillRepository(database,audit);
+  const admin:TenantContext={...context,principal:{...context.principal,permissions:new Set([...context.principal.permissions,'admin:settings' as const])}};
+  try{
+    const skill=skills.create(admin,{scope:'organization',name:'Shared',template:'Hello'});
+    database.prepare('UPDATE skills SET enabled=0 WHERE tenant_id=? AND id=?').run(context.principal.tenantId,skill.id);
+    for(const caller of [context,admin])assert.throws(()=>skills.render(caller,skill.id,{}),skillNotFound);
+    assert.equal(database.prepare('SELECT count(*) FROM skill_invocations').pluck().get(),0);
+  }finally{database.close()}
+});
