@@ -19,7 +19,7 @@
     "test": "npm run build --silent && node --import tsx --import ./src/test-env.ts --test \"src/**/*.test.ts\""
   },
   "dependencies": {
-    "@hono/node-server": "^2.0.11",
+    "@hono/node-server": "^2.1.6",
     "bcryptjs": "^3.0.2",
     "better-sqlite3": "^12.2.0",
     "dotenv": "^17.2.1",
