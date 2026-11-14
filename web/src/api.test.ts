@@ -132,16 +132,22 @@ test('a 401 after successful refresh is returned after exactly one retry', async
 
 test('auth bootstrap endpoints never trigger session refresh', async () => {
   const originalFetch = globalThis.fetch;
+  const originalLocation = Object.getOwnPropertyDescriptor(globalThis,'location');
+  const assigned:string[] = [];
   const called:string[] = [];
+  Object.defineProperty(globalThis,'location',{configurable:true,value:{origin:'https://chat.example.test',pathname:'/settings',search:'',assign:(target:string)=>assigned.push(target)}});
   globalThis.fetch = async input => { called.push(String(input)); return apiError(); };
   try {
     for (const path of ['/api/v1/auth/login','/api/v1/auth/refresh','/api/v1/auth/me']) {
       await assert.rejects(apiFetch(path),error => error instanceof ApiClientError && error.status === 401);
     }
+    await assert.rejects(apiFetch('/api/v1/auth/logout',{method:'POST',body:'{}'}),error => error instanceof ApiClientError && error.status === 401);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalLocation) Object.defineProperty(globalThis,'location',originalLocation); else delete globalThis.location;
   }
-  assert.deepEqual(called,['/api/v1/auth/login','/api/v1/auth/refresh','/api/v1/auth/me']);
+  assert.deepEqual(called,['/api/v1/auth/login','/api/v1/auth/refresh','/api/v1/auth/me','/api/v1/auth/logout']);
+  assert.deepEqual(assigned,[]);
 });
 
 test('an operation-specific 401 is returned without refresh or a login redirect',async()=>{

@@ -24,8 +24,10 @@ function mayRefreshSession(path:string): boolean {
   const target = pathname(path);
   if (!target) return false;
   // These routes establish or inspect auth state. Retrying them through refresh either recurses or
-  // turns an expected signed-out response into an unrelated refresh-token failure.
+  // turns an expected signed-out response into an unrelated refresh-token failure; a 401 from logout
+  // means the session is already gone.
   return target !== '/api/v1/auth/me'
+    && target !== '/api/v1/auth/logout'
     && !target.startsWith('/api/v1/auth/login')
     && !target.startsWith('/api/v1/auth/refresh')
     && !target.startsWith('/api/v1/auth/password/forgot')
