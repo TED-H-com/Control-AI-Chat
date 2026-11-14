@@ -270,7 +270,8 @@ const assistantDraft=createAssistantDraftAdapter({database:db,audit,hmacKey:key(
 const approvalPayloadKey=key('approval-payload');
 const chat=createGovernedChatApplication({database:db,gate,providers,tenantProviders,audit,approvalPayloadKey,multiModelResultKey:key('multi-model-result')});
 export const approvalReleaseWorker=new ApprovalReleaseWorker({database:db,gate,providers,tenantProviders,audit,approvalPayloadKey});
-const auditRoutes=createAuditRouteAdapter({database:db,cursorKey:key('audit-cursor'),ipHmacKey:key('ip'),idempotencyHmacKey:key('approval-decision-idempotency'),exportDirectory:`${config.uploadDir}/audit-exports`,audit,approvalReleaseAvailable:approvalReleaseWorker.available,approvalReleaseQueue:approvalReleaseWorker});
+export const auditExportDirectory=`${config.uploadDir}/audit-exports`;
+const auditRoutes=createAuditRouteAdapter({database:db,cursorKey:key('audit-cursor'),ipHmacKey:key('ip'),idempotencyHmacKey:key('approval-decision-idempotency'),exportDirectory:auditExportDirectory,audit,approvalReleaseAvailable:approvalReleaseWorker.available,approvalReleaseQueue:approvalReleaseWorker});
 const violationTriage=createViolationTriageAdapter({database:db,audit,idempotencyHmacKey:key('violation-triage-idempotency'),approvalReleaseAvailable:approvalReleaseWorker.available});
 approvalReleaseWorker.start();
 if(config.nodeEnv==='production'&&chat.constructor.name!=='GovernedChatApplication')throw new Error('Refusing to boot production with prototype chat services');

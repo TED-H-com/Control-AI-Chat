@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import Database from 'better-sqlite3';
 import { createAuditService, createTenantRetentionPolicy, purgeExpiredConversations, purgeExpiredProjectFiles, type AuditService } from '../../lib/audit/index.js';
@@ -64,6 +67,33 @@ test('retention worker uses each tenant policy and cleans final replay records a
   assert.equal(database.prepare('SELECT payload_purged_at_ms FROM policy_approval_requests WHERE tenant_id=? AND id=?').pluck().get(TENANTS[1],rows[1]!.approvalId),null);
   for(const [index,row] of rows.entries())assert.equal(database.prepare('SELECT 1 FROM idempotency_records WHERE tenant_id=? AND id=?').get(TENANTS[index],row.replayId),undefined);
   database.close();
+});
+
+test('a busy WAL checkpoint leaves approval cleanup for retry without blocking replay cleanup or later tenants',async t=>{
+  const directory=mkdtempSync(join(tmpdir(),'audit-retention-wal-')),filename=join(directory,'retention.db');
+  const database=new Database(filename);database.pragma('journal_mode=WAL');database.pragma('busy_timeout=0');database.pragma('foreign_keys=ON');runMigrations(database);
+  const rows=TENANTS.map((tenant,index)=>seedTenant(database,tenant,index)),reader=new Database(filename),logged:string[]=[];
+  t.after(()=>{if(reader.open){if(reader.inTransaction)reader.exec('ROLLBACK');reader.close();}database.close();rmSync(directory,{recursive:true,force:true});});
+  reader.exec('BEGIN');reader.prepare('SELECT count(*) FROM idempotency_records').get();
+  database.prepare("UPDATE idempotency_records SET response_json='{\"pinned\":true}' WHERE tenant_id=? AND id=?").run(TENANTS[0],rows[0]!.replayId);
+  const deps={database,blobStore:blobRecorder().store,audit:workerAudit(database),now:()=>NOW,enforcementEnabled:true,logger:{error:(message:string)=>logged.push(message)},retentionPolicy:(tenantId:TenantId)=>({tenantId,chatTranscriptDays:90,violationTranscriptDays:365,approvalPayloadDays:tenantId===TENANTS[0]?1:365,auditMetadataDays:null,captureTranscripts:false,effectiveAtMs:NOW})};
+  try{await runRetentionMaintenance(deps);}catch(error){
+    assert.equal(database.prepare('SELECT count(*) FROM idempotency_records WHERE tenant_id=? AND id=?').pluck().get(TENANTS[0],rows[0]!.replayId),1);
+    throw error;
+  }
+  for(const [index,row] of rows.entries())assert.equal(database.prepare('SELECT 1 FROM idempotency_records WHERE tenant_id=? AND id=?').get(TENANTS[index],row.replayId),undefined);
+  assert.deepEqual(logged,[`Retention could not finish destroying expired approval keys for tenant ${TENANTS[0]}; it will be retried`]);
+  reader.exec('ROLLBACK');reader.close();
+  await runRetentionMaintenance(deps);
+  assert.equal(database.prepare('SELECT payload_crypto_state FROM policy_approval_requests WHERE tenant_id=? AND id=?').pluck().get(TENANTS[0],rows[0]!.approvalId),'key_destroyed');
+  assert.equal(logged.length,1);
+});
+
+test('an unrelated approval retention error still aborts the pass',async t=>{
+  const database=new Database(':memory:');database.pragma('foreign_keys=ON');runMigrations(database);t.after(()=>database.close());
+  const row=seedTenant(database,TENANTS[0],0);
+  await assert.rejects(()=>runRetentionMaintenance({database,blobStore:blobRecorder().store,audit:workerAudit(database),now:()=>NOW,retentionPolicy:tenantId=>({tenantId,chatTranscriptDays:90,violationTranscriptDays:365,approvalPayloadDays:0,auditMetadataDays:null,captureTranscripts:false,effectiveAtMs:NOW})}),/Invalid approval payload retention/);
+  assert.ok(database.prepare('SELECT id FROM idempotency_records WHERE tenant_id=? AND id=?').get(TENANTS[0],row.replayId));
 });
 
 test('conversation retention purges only expired content, preserves rows and foreign keys, and is idempotent',async()=>{

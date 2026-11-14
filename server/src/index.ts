@@ -8,7 +8,7 @@ import type { AppVariables } from './lib/http/index.js';
 import { handleRequestError } from './lib/http/errors.js';
 import { forTenant } from './lib/db.js';
 import { createV1Routes } from './routes/index.js';
-import { approvalReleaseWorker, audit, deploymentBlobs, resolvePrincipal, retentionPolicy, services } from './integration-services.js';
+import { approvalReleaseWorker, audit, auditExportDirectory, deploymentBlobs, resolvePrincipal, retentionPolicy, services } from './integration-services.js';
 import { securityHeaders, requestSizeLimit, apiV1Authentication, apiV1CsrfProtection, governanceRateLimit, publicLoginRateLimit, DEFAULT_UPLOAD_LIMIT } from './lib/middleware/index.js';
 import { staticSurfaces } from './lib/static/index.js';
 import { RateLimiter } from './lib/governance/rateLimit.js';
@@ -65,7 +65,7 @@ app.use('*',staticSurfaces({appRoot:webRoot}));
 
 // Revocation commits before its directory is removed, so a crash cannot leave a credential
 // routable. The revoked rows are a durable cleanup queue and are drained before this process serves.
-const auditWorkers=startAuditWorkers({database:db,audit,retentionPolicy,blobStore:deploymentBlobs,retentionEnforcementEnabled:config.retentionEnforcementEnabled,logger:console});
+const auditWorkers=startAuditWorkers({database:db,exportDirectory:auditExportDirectory,audit,retentionPolicy,blobStore:deploymentBlobs,retentionEnforcementEnabled:config.retentionEnforcementEnabled,logger:console});
 
 const server = serve({fetch:app.fetch,hostname:config.host,port:config.port},info => {
   console.log(`${PRODUCT_NAME} listening on http://${info.address}:${info.port}`);

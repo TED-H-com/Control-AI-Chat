@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../lib/migrations/index.js';
 import { forTenant, type TenantDb } from '../../lib/db.js';
-import { AuditSearch, AuditStore, verifyAuditChain } from '../../lib/audit/index.js';
+import { AuditChainUnavailableError, AuditSearch, AuditStore, verifyAuditChain } from '../../lib/audit/index.js';
 import type { RouteRequest } from '../../routes/types.js';
 import { APPROVAL_STATUSES, type ApprovalReleaseStatus, type ApprovalStatus } from '../../shared/api.js';
 import type { TenantId } from '../../shared/types.js';
 import { createAuditRouteAdapter, type AuditAdapterDependencies, type AuditRouteAdapter } from './adapters.js';
-import { evaluateAlerts, forEachMaintenanceTenant, runReservationMaintenance, startAuditWorkers } from './workers.js';
+import { evaluateAlerts, forEachMaintenanceTenant, runAuditExportMaintenance, runReservationMaintenance, startAuditWorkers } from './workers.js';
 
 const tenantId='00000000-0000-4000-8000-000000000001' as TenantId;
 // The reader hashes an address with this to filter on it, so it has to be the key the store wrote with.
@@ -170,6 +173,28 @@ test('a failed audit export records matching failed export and audit outcomes',a
   db.close();
 });
 
+test('an expired audit download is refused while its file remains on disk until maintenance',async t=>{
+  const directory=mkdtempSync(join(tmpdir(),'audit-export-route-')),db=fixture();seed(db);
+  t.after(()=>{db.close();rmSync(directory,{recursive:true,force:true});});
+  let at=AT;
+  const routes=createAuditRouteAdapter({database:db,cursorKey:Buffer.alloc(32),ipHmacKey:ipKey,idempotencyHmacKey:Buffer.alloc(32,11),exportDirectory:directory,audit:store(db),approvalReleaseAvailable:false,now:()=>at});
+  const created=await routes.execute('audit.createExport',request(db,{format:'json',filters:{}}));assert.equal(created.status,202);
+  const id=(created.body as {id:string}).id;
+  let status:string|undefined;
+  for(let attempt=0;attempt<100;attempt++){
+    status=db.prepare('SELECT status FROM audit_exports WHERE tenant_id=? AND id=?').pluck().get(tenantId,id) as string|undefined;
+    if(status==='completed'||status==='failed')break;
+    await new Promise(resolve=>setTimeout(resolve,5));
+  }
+  assert.equal(status,'completed');at=AT+24*60*60_000;
+  assert.equal((await routes.execute('audit.download',{...request(db,null),params:{id}})).status,404);
+  assert.equal(existsSync(join(directory,`${id}.json`)),true);
+  assert.ok(db.prepare('SELECT id FROM audit_exports WHERE tenant_id=? AND id=?').get(tenantId,id));
+  await runAuditExportMaintenance({database:db,exportDirectory:directory,now:()=>at});
+  assert.equal(existsSync(join(directory,`${id}.json`)),false);
+  assert.equal(db.prepare('SELECT id FROM audit_exports WHERE tenant_id=? AND id=?').get(tenantId,id),undefined);
+});
+
 test('the audit export row cap stores only EXPORT_TOO_LARGE',async()=>{
   const db=fixture();seed(db);store(db).append({tenantId,action:'system.retention_purged',actor:{type:'service',id:'retention',sessionId:null,ip:null,userAgent:null,authMethod:'system'},target:{type:'tenant',id:tenantId},outcome:'success',context:{requestId:'row-cap',traceId:null,source:'worker',occurredAtMs:AT},metadata:{}});
   const original=AuditSearch.prototype.search,logged:unknown[][]=[];
@@ -265,6 +290,38 @@ test('failed chain verification records its broken sequence and caller identity'
   assert.deepEqual(JSON.parse(completed.metadata_json),{mode:'full',checkedRows:0,elapsedMs:0,breakAtSequence:1});
   assert.deepEqual({actor:completed.actor_id,session:completed.actor_session_id,request:completed.request_id},{actor:ID.actor,session:'s',request:'req'});
   db.close();
+});
+
+test('a broken chain can still be verified when verification events cannot be recorded',async t=>{
+  const {db}=governed(),base=store(db),errors:string[]=[];t.after(()=>db.close());let attempts=0;
+  const routes=createAuditRouteAdapter({database:db,cursorKey:Buffer.alloc(32),ipHmacKey:ipKey,idempotencyHmacKey:Buffer.alloc(32,11),exportDirectory:'/tmp/gateway-audit-test',audit:{transact(work){attempts++;return base.transact(work);}},approvalReleaseAvailable:false,now:()=>AT});
+  t.mock.method(console,'error',(message:unknown)=>{errors.push(String(message));});
+  db.prepare("UPDATE audit_events SET metadata_json='{}' WHERE tenant_id=? AND sequence=1").run(tenantId);
+  db.prepare("UPDATE audit_chain_heads SET status='broken' WHERE tenant_id=?").run(tenantId);
+  const result=await routes.execute('audit.integrity',request(db,null));
+  assert.equal(result.status,undefined);
+  assert.equal((result.body as {valid:boolean}).valid,false);
+  assert.equal((result.body as {breakAtSequence:number}).breakAtSequence,1);
+  assert.equal(stored(db,'admin.chain_verification_started').length,0);
+  assert.equal(stored(db,'admin.chain_verification_completed').length,0);
+  assert.equal(attempts,1);
+  assert.deepEqual(errors,['Audit chain verification could not be recorded because the chain is unavailable']);
+});
+
+test('a chain that becomes unavailable at completion still returns the verification',async t=>{
+  const {db}=governed(),base=store(db),errors:string[]=[];t.after(()=>db.close());
+  let calls=0;
+  const routes=createAuditRouteAdapter({database:db,cursorKey:Buffer.alloc(32),ipHmacKey:ipKey,idempotencyHmacKey:Buffer.alloc(32,11),exportDirectory:'/tmp/gateway-audit-test',audit:{transact(work){if(++calls===2)throw new AuditChainUnavailableError('broken');return base.transact(work);}},approvalReleaseAvailable:false,logger:{error:(message:unknown)=>{errors.push(String(message));}},now:()=>AT});
+  const result=await routes.execute('audit.integrity',request(db,null));
+  assert.equal(result.status,undefined);assert.equal((result.body as {valid:boolean}).valid,true);assert.equal(calls,2);
+  assert.equal(stored(db,'admin.chain_verification_started').length,1);assert.equal(stored(db,'admin.chain_verification_completed').length,0);
+  assert.deepEqual(errors,['Audit chain verification could not be recorded because the chain is unavailable']);
+});
+
+for(const failAt of [1,2])test(`chain verification propagates unrelated append failure ${failAt}`,async t=>{
+  const {db}=governed(),base=store(db);t.after(()=>db.close());let calls=0;
+  const routes=createAuditRouteAdapter({database:db,cursorKey:Buffer.alloc(32),ipHmacKey:ipKey,idempotencyHmacKey:Buffer.alloc(32,11),exportDirectory:'/tmp/gateway-audit-test',audit:{transact(work){if(++calls===failAt)throw new Error('unexpected audit error');return base.transact(work);}},approvalReleaseAvailable:false,now:()=>AT});
+  await assert.rejects(()=>routes.execute('audit.integrity',request(db,null)),/unexpected audit error/);
 });
 
 test('audit detail cannot cross the principal tenant boundary',async()=>{
