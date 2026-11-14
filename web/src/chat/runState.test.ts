@@ -1,10 +1,12 @@
 // @ts-nocheck -- web production tsconfig intentionally excludes Node test types.
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import {ApiClientError} from '../api.js';
 import { chatApi } from './api.js';
 import { routingSelection } from './routing.js';
 import { bindPendingMessage, chatOwnerKey, failureFromStartCatch, ownerMatchesRoute, reconcileCompletedMessages, regenerateForSelection, retryForFailure, revisePendingMessage, runAfterFailure, startApprovalPolling } from './runState.js';
+import * as runState from './runState.js';
 import {ChatHttpError} from './stream.js';
 
 function message(id:string,role:'user'|'assistant',content:string) {
@@ -246,4 +248,158 @@ test('approval polling backs off transient failures and cancellation aborts in-f
   releaseInFlight?.({status:'awaiting_approval'});
   await Promise.resolve();
   assert.equal(outcome,null,'a cancelled watcher cannot update UI state');
+});
+
+const allConversationMutations = ['rename', 'pin', 'unpin', 'archive', 'restore', 'delete'] as const;
+const syntheticApiError = (status: number, code = 'PRECONDITION_FAILED') =>
+  new ApiClientError(status, { error: { code, message: 'Synthetic conflict', retryable: false, requestId: 'synthetic' } });
+const snapshotForMutation = (mutation: runState.ConversationMutation) => ({
+  version: 100,
+  title: 'Quarterly notes',
+  pinned: mutation === 'unpin',
+  status: mutation === 'restore' ? 'archived' as const : 'active' as const,
+});
+
+test('T1 writeWithFreshVersion writes once and skips current when there is no conflict', async () => {
+  const seen = snapshotForMutation('rename');
+  const expected = { id: 'conversation-1', version: 101 };
+  const writes: number[] = [];
+  let reads = 0;
+  const result = await runState.writeWithFreshVersion(
+    'rename',
+    seen,
+    async version => { writes.push(version); return expected; },
+    async () => { reads += 1; return { ...seen, version: 200 }; },
+  );
+  assert.strictEqual(result, expected);
+  assert.deepEqual(writes, [100]);
+  assert.equal(reads, 0);
+});
+
+for (const mutation of allConversationMutations) {
+  test(`T2 writeWithFreshVersion retries once with fresh version for ${mutation} when only other fields changed`, async () => {
+    const seen = snapshotForMutation(mutation);
+    const fresh = mutation === 'rename'
+      ? { version: 200, title: seen.title, pinned: !seen.pinned, status: 'archived' as const }
+      : mutation === 'pin' || mutation === 'unpin'
+        ? { version: 200, title: 'Generated title', pinned: seen.pinned, status: 'archived' as const }
+        : { version: 200, title: 'Generated title', pinned: !seen.pinned, status: seen.status };
+    const secondResult = { id: 'conversation-1', version: 201 };
+    const writes: number[] = [];
+    let reads = 0;
+    const result = await runState.writeWithFreshVersion(
+      mutation,
+      seen,
+      async version => {
+        writes.push(version);
+        if (writes.length === 1) throw syntheticApiError(412);
+        return secondResult;
+      },
+      async () => { reads += 1; return fresh; },
+    );
+    assert.strictEqual(result, secondResult);
+    assert.deepEqual(writes, [100, 200]);
+    assert.equal(reads, 1);
+  });
+
+  test(`T3 writeWithFreshVersion rethrows original conflict for ${mutation} when the written field changed`, async () => {
+    const seen = snapshotForMutation(mutation);
+    const fresh = mutation === 'rename'
+      ? { ...seen, version: 200, title: 'Renamed elsewhere' }
+      : mutation === 'pin' || mutation === 'unpin'
+        ? { ...seen, version: 200, pinned: !seen.pinned }
+        : { ...seen, version: 200, status: seen.status === 'active' ? 'archived' as const : 'active' as const };
+    const original = syntheticApiError(412);
+    const writes: number[] = [];
+    let reads = 0;
+    await assert.rejects(
+      () => runState.writeWithFreshVersion(
+        mutation,
+        seen,
+        async version => { writes.push(version); throw original; },
+        async () => { reads += 1; return fresh; },
+      ),
+      error => error === original,
+    );
+    assert.deepEqual(writes, [100]);
+    assert.equal(reads, 1);
+  });
+}
+
+test('T4 writeWithFreshVersion rethrows original conflict when reading current fails', async () => {
+  const seen = snapshotForMutation('rename');
+  const original = syntheticApiError(412);
+  const writes: number[] = [];
+  let reads = 0;
+  await assert.rejects(
+    () => runState.writeWithFreshVersion(
+      'rename',
+      seen,
+      async version => { writes.push(version); throw original; },
+      async () => { reads += 1; throw new Error('offline'); },
+    ),
+    error => error === original,
+  );
+  assert.deepEqual(writes, [100]);
+  assert.equal(reads, 1);
+});
+
+test('T5 writeWithFreshVersion propagates non-conflict failures without reading current', async () => {
+  const seen = snapshotForMutation('rename');
+  for (const failure of [
+    syntheticApiError(404, 'RESOURCE_NOT_FOUND'),
+    syntheticApiError(409, 'CONFLICT'),
+    syntheticApiError(500, 'INTERNAL_ERROR'),
+    new TypeError('offline'),
+  ]) {
+    const writes: number[] = [];
+    let reads = 0;
+    await assert.rejects(
+      () => runState.writeWithFreshVersion(
+        'rename',
+        seen,
+        async version => { writes.push(version); throw failure; },
+        async () => { reads += 1; return { ...seen, version: 200 }; },
+      ),
+      error => error === failure,
+    );
+    assert.deepEqual(writes, [100]);
+    assert.equal(reads, 0);
+  }
+});
+
+test('T6 writeWithFreshVersion propagates second 412 error after exactly two writes', async () => {
+  const seen = snapshotForMutation('pin');
+  const first = syntheticApiError(412);
+  const second = syntheticApiError(412);
+  const writes: number[] = [];
+  let reads = 0;
+  await assert.rejects(
+    () => runState.writeWithFreshVersion(
+      'pin',
+      seen,
+      async version => { writes.push(version); throw writes.length === 1 ? first : second; },
+      async () => { reads += 1; return { ...seen, version: 200 }; },
+    ),
+    error => error === second,
+  );
+  assert.deepEqual(writes, [100, 200]);
+  assert.equal(reads, 1);
+});
+
+test('T7 isVersionConflict matches 412 and PRECONDITION_FAILED only', () => {
+  assert.equal(runState.isVersionConflict(syntheticApiError(412, 'CONFLICT')), true);
+  assert.equal(runState.isVersionConflict(syntheticApiError(412, 'INTERNAL_ERROR')), true);
+  assert.equal(runState.isVersionConflict(syntheticApiError(409, 'PRECONDITION_FAILED')), true);
+  assert.equal(runState.isVersionConflict(syntheticApiError(409, 'CONFLICT')), false);
+  assert.equal(runState.isVersionConflict(new Error('conflict')), false);
+});
+
+test('T8 ChatApp wires conversation mutations through writeWithFreshVersion', () => {
+  const source = readFileSync(new URL('./ChatApp.tsx', import.meta.url), 'utf8');
+  assert.ok(source.includes("writeWithFreshVersion('delete'"));
+  assert.ok(source.includes('writeWithFreshVersion(mutation'));
+  assert.equal(source.includes('chatApi.deleteConversation(conversation.id,conversation.version)'), false);
+  assert.equal(source.includes('chatApi.updateConversation(conversation.id,body,conversation.version)'), false);
+  assert.doesNotMatch(source, /\btype\s+ConversationMutation\b/);
 });

@@ -4,7 +4,7 @@ import {chatApi,type ChatSelection} from './api.js';
 import {chatFailureCanRetry} from './failures.js';
 import type {ChatMode,ReasoningEffort} from './routing.js';
 import {ChatHttpError} from './stream.js';
-import type { ActiveRun,ChatFailure, ChatRunRequest, ChatView, ConversationDetail, Message } from './types.js';
+import type { ActiveRun,ChatFailure, ChatRunRequest, ChatView, Conversation, ConversationDetail, Message } from './types.js';
 
 export const NEW_CHAT_OWNER = 'chat:new';
 
@@ -121,4 +121,49 @@ export function startApprovalPolling(options:ApprovalPollOptions):()=>void {
     request?.abort();
     request=null;
   };
+}
+
+export type ConversationMutation = 'rename'|'pin'|'unpin'|'archive'|'restore'|'delete';
+
+export function isVersionConflict(error: unknown): boolean {
+  return error instanceof ApiClientError && (error.status === 412 || error.body.error.code === 'PRECONDITION_FAILED');
+}
+
+export function writtenFieldUnchanged(
+  mutation: ConversationMutation,
+  seen: Pick<Conversation, 'title' | 'pinned' | 'status'>,
+  fresh: Pick<Conversation, 'title' | 'pinned' | 'status'>,
+): boolean {
+  switch (mutation) {
+    case 'rename': return seen.title === fresh.title;
+    case 'pin':
+    case 'unpin': return seen.pinned === fresh.pinned;
+    case 'archive':
+    case 'restore':
+    case 'delete': return seen.status === fresh.status;
+  }
+}
+
+// A run moves the conversation version at the gate and on completion while the list keeps the old
+// one, and each action writes one absolute field, so one retry is safe while that field still holds
+// what the user saw.
+export async function writeWithFreshVersion<T>(
+  mutation: ConversationMutation,
+  seen: Pick<Conversation, 'version' | 'title' | 'pinned' | 'status'>,
+  write: (version: number) => Promise<T>,
+  current: () => Promise<Pick<Conversation, 'version' | 'title' | 'pinned' | 'status'>>,
+): Promise<T> {
+  try {
+    return await write(seen.version);
+  } catch (error) {
+    if (!isVersionConflict(error)) throw error;
+    let fresh: Pick<Conversation, 'version' | 'title' | 'pinned' | 'status'>;
+    try {
+      fresh = await current();
+    } catch {
+      throw error;
+    }
+    if (!writtenFieldUnchanged(mutation, seen, fresh)) throw error;
+    return await write(fresh.version);
+  }
 }

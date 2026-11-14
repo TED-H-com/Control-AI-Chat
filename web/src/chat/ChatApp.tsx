@@ -15,7 +15,8 @@ import { RunWarningDialog, SkillDialog } from './Dialogs.js';
 import { EmptyChat, NoModelsChat, ProjectDetailPage, ProjectsPage, SearchPage, SettingsPage, SkillsPage } from './Pages.js';
 import { ConversationHeader } from './ConversationHeader.js';
 import { useDeployment } from '../deployment.js';
-import { bindPendingMessage, chatOwnerKey, failureFromStartCatch, ownerMatchesRoute, reconcileCompletedMessages, regenerateForSelection, retryForFailure, revisePendingMessage, runAfterFailure, startApprovalPolling } from './runState.js';
+import { bindPendingMessage, chatOwnerKey, failureFromStartCatch, ownerMatchesRoute, reconcileCompletedMessages, regenerateForSelection, retryForFailure, revisePendingMessage, runAfterFailure, startApprovalPolling, writeWithFreshVersion } from './runState.js';
+import type { ConversationMutation } from './runState.js';
 import { CHAT_UPLOAD_PROJECT_NAME, detachUpload, existingUploadProjectId, validateFiles, type FileValidationProblem } from './context.js';
 import { parseChatRoute, type ChatRoute } from './routes.js';
 import { canConfigureProviders } from './access.js';
@@ -29,7 +30,6 @@ const idle: AttributedRun = { runId:null, conversationId:null, assistantMessageI
 const defaults: UserPreferences = { density:'comfortable', colorMode:'system', locale:'en' };
 const effortStorageKey = 'app.chat.effort';
 const settingsHistoryKey = 'app.settings.entry';
-type ConversationMutation = 'rename'|'pin'|'unpin'|'archive'|'restore'|'delete';
 type PendingTurn = Readonly<{ownerKey:string;message:Message}>;
 
 export function applyMessageCreated(run:AttributedRun,event:Extract<StreamEvent,{event:'message.created'}>,ownerKey:string):AttributedRun {
@@ -245,8 +245,9 @@ export function ChatApp() {
     setConversationDialogError(null);
     setConversationFeedback(null);
     try {
+      const current = async () => (await chatApi.conversation(conversation.id)).conversation;
       if (mutation === 'delete') {
-        await chatApi.deleteConversation(conversation.id,conversation.version);
+        await writeWithFreshVersion('delete',conversation,v => chatApi.deleteConversation(conversation.id,v),current);
         setData(old => ({
           ...old,
           conversations:old.conversations.filter(item => item.id !== conversation.id),
@@ -255,7 +256,7 @@ export function ChatApp() {
         }));
       } else {
         const body = mutation === 'rename' ? {title} : mutation === 'pin' ? {pinned:true} : mutation === 'unpin' ? {pinned:false} : mutation === 'archive' ? {status:'archived'} : {status:'active'};
-        applyConversation(await chatApi.updateConversation(conversation.id,body,conversation.version));
+        applyConversation(await writeWithFreshVersion(mutation,conversation,v => chatApi.updateConversation(conversation.id,body,v),current));
       }
       setConversationFeedback({kind:'status',message:successMessage(mutation)});
       if (route().id === conversation.id && (mutation === 'archive' || mutation === 'delete')) navigate(mutation === 'archive' ? '/archived' : '/chat');
